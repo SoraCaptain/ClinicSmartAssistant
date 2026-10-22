@@ -45,22 +45,33 @@ def _match_all(search, query: str, id_key: str) -> list[dict]:
 
 
 def retrieve_catalog(message: str) -> dict:
-    """Treatments matched on the message; doctors matched by specialty directly or
-    via a matched treatment's category (T005 'Orthopedics' → D104); clinics reduced
-    to those the retrieved doctors practice at."""
+    """Treatments matched on the message; doctors matched by generic search
+    (name/specialty/languages/bio) directly or via a matched treatment's category
+    (T001 'Preventative Care' → D101 via bio); clinics matched directly on the
+    message, unioned with the sites the retrieved doctors practice at (dedup by
+    clinic_id). When nothing matches at all, the full catalog is returned so the
+    LLM can enumerate it and honestly deny absent services — a designed retrieval
+    strategy for an 11-row corpus, not an error path."""
     treatments = _match_all(search_treatments, message, "treatment_id")
-    doctors = _match_all(search_doctors, message, "doctor_id")
+    doctors = _match_all(lambda q: search_doctors(search=q), message, "doctor_id")
+    clinics = _match_all(lambda q: get_clinics(search=q), message, "clinic_id")
     if treatments:
         by_id = {d["doctor_id"]: d for d in doctors}
         for treatment in treatments:
-            for doctor in search_doctors(treatment["category"]):
+            for doctor in search_doctors(search=treatment["category"]):
                 by_id.setdefault(doctor["doctor_id"], doctor)
         doctors = list(by_id.values())
     if doctors:
         clinic_ids = {d["clinic_id"] for d in doctors}
-        clinics = [c for c in get_clinics() if c["clinic_id"] in clinic_ids]
-    else:
-        clinics = []
+        by_id = {c["clinic_id"]: c for c in clinics}
+        for clinic in get_clinics():
+            if clinic["clinic_id"] in clinic_ids:
+                by_id.setdefault(clinic["clinic_id"], clinic)
+        clinics = list(by_id.values())
+    if not (treatments or doctors or clinics):
+        treatments = search_treatments()
+        doctors = search_doctors()
+        clinics = get_clinics()
     return {"treatments": treatments, "doctors": doctors, "clinics": clinics}
 
 

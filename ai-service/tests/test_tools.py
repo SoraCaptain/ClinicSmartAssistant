@@ -67,10 +67,12 @@ def test_catalog_tools_pass_query_params(mock_transport):
 
     mock_transport(handler)
     assert search_doctors(specialty="Ortho") == []
+    assert search_doctors(search="spanish") == []
     assert search_treatments(search="joint pain") == []
     assert search_doctors() == []
     assert captured == [
         ("/api/doctors", {"specialty": "Ortho"}),
+        ("/api/doctors", {"search": "spanish"}),
         ("/api/treatments", {"search": "joint pain"}),
         ("/api/doctors", {}),
     ]
@@ -86,7 +88,12 @@ def test_get_clinics_passes_clinic_id(mock_transport):
     mock_transport(handler)
     assert get_clinics() == []
     assert get_clinics(clinic_id="C001") == []
-    assert captured == [("/api/clinics", {}), ("/api/clinics", {"clinic_id": "C001"})]
+    assert get_clinics(search="metro") == []
+    assert captured == [
+        ("/api/clinics", {}),
+        ("/api/clinics", {"clinic_id": "C001"}),
+        ("/api/clinics", {"search": "metro"}),
+    ]
 
 
 def test_get_my_bookings_queries_patient_id(mock_transport):

@@ -8,8 +8,9 @@ import uuid
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agent.graph import build_clinic_graph
-from app.agent.prompts import render_bookings
-from tests.conftest import BOOKINGS, PATIENT_CONTEXT
+from app.agent.nodes.qa import retrieve_catalog
+from app.agent.prompts import render_bookings, render_catalog, render_patient_context
+from tests.conftest import BOOKINGS, CLINICS, DOCTORS, PATIENT_CONTEXT, TREATMENTS
 
 
 def _invoke(graph, message: str, thread_id: str) -> dict:
@@ -58,14 +59,19 @@ def test_specialty_question_grounds_doctor_directly(fake_chains):
     assert result["reply"] == "Dr. Elena Rostova (D103) covers dermatology."
 
 
-def test_no_catalog_match_renders_none_and_stays_grounded(fake_chains):
+def test_no_catalog_match_returns_full_catalog_for_honest_denial(fake_chains):
+    """Empty retrieval is a designed strategy, not an error: nothing matched → the
+    whole corpus is returned so the LLM can enumerate offerings and deny the
+    absent service honestly."""
     fakes = fake_chains("qa", qa_reply="I don't have that treatment in the catalog.")
     graph = build_clinic_graph(InMemorySaver())
 
     result = _invoke(graph, "do you offer aromatherapy massage?", uuid.uuid4().hex)
 
-    assert "(none)" in fakes["qa"].prompts[-1]
-    assert result["retrieved"] == []
+    assert result["retrieved"] == [*TREATMENTS, *DOCTORS, *CLINICS]
+    prompt = fakes["qa"].prompts[-1]
+    for row_id in ("[T001]", "[T005]", "[D101]", "[D104]", "[C001]", "[C002]"):
+        assert row_id in prompt
     assert result["reply"] == "I don't have that treatment in the catalog."
 
 
@@ -79,6 +85,84 @@ def test_catalog_unreachable_is_readable_without_llm(fake_chains, catalog_fakes)
     assert "couldn't reach the clinic catalog" in result["reply"]
     assert "boom" in result["reply"]
     assert fakes["qa"].prompts == []  # a broken data path never reaches the LLM
+
+
+def test_retrieve_matches_clinic_directly_by_name_token(catalog_fakes):
+    """Clinics are matched on the message itself (not only derived from doctors):
+    token 'sunset' hits Sunset Wellness Center directly."""
+    catalog_fakes()
+
+    result = retrieve_catalog("how do I get to Sunset Wellness?")
+
+    assert [c["clinic_id"] for c in result["clinics"]] == ["C002"]
+    assert result["treatments"] == [] and result["doctors"] == []
+
+
+def test_retrieve_matches_doctor_via_language(catalog_fakes):
+    """Generic doctor search spans languages_spoken: token 'spanish' → D101."""
+    catalog_fakes()
+
+    result = retrieve_catalog("is there a doctor who speaks Spanish?")
+
+    assert [d["doctor_id"] for d in result["doctors"]] == ["D101"]
+    assert [c["clinic_id"] for c in result["clinics"]] == ["C001"]  # derived from D101
+
+
+def test_retrieve_matches_doctor_via_bio(catalog_fakes):
+    """Generic doctor search spans bio: tokens 'sports'/'injuries' → D104."""
+    catalog_fakes()
+
+    result = retrieve_catalog("who treats sports injuries?")
+
+    assert [d["doctor_id"] for d in result["doctors"]] == ["D104"]
+
+
+def test_treatment_category_bridges_to_doctor_via_bio(catalog_fakes):
+    """T001's 'Preventative Care' category bridges to D101 through its bio — the
+    specialty-only bridge found nothing here (no doctor carries that specialty)."""
+    catalog_fakes()
+
+    result = retrieve_catalog("just a routine checkup please")
+
+    assert [t["treatment_id"] for t in result["treatments"]] == ["T001"]
+    assert [d["doctor_id"] for d in result["doctors"]] == ["D101"]  # bridge-only: no direct match
+    assert [c["clinic_id"] for c in result["clinics"]] == ["C001"]
+
+
+def test_render_catalog_carries_cancellation_and_emergency():
+    rendered = render_catalog([], [], CLINICS)
+
+    assert "cancellation: 24 hours" in rendered
+    assert "emergency: Dial 911." in rendered
+
+
+def test_render_patient_context_carries_medication_notes_doctor_name():
+    rendered = render_patient_context(PATIENT_CONTEXT)
+
+    assert "(Dr. Sarah Jenkins)" in rendered
+    assert "medication: Multivitamins" in rendered
+    assert "notes: Blood pressure normal." in rendered
+
+    # rows predating the doctor_name join render the doctor_id fallback, and omit
+    # absent medication/notes instead of printing nulls
+    bare = {k: v for k, v in PATIENT_CONTEXT["treatment_history"][0].items() if k not in ("doctor_name", "prescribed_medication", "doctor_notes")}
+    no_optional = render_patient_context({**PATIENT_CONTEXT, "treatment_history": [bare]})
+
+    assert "(D101)" in no_optional
+    assert "medication:" not in no_optional and "notes:" not in no_optional
+
+
+def test_classifier_prompt_covers_patient_record_questions(fake_chains):
+    """Own-record questions (allergies, history, profile) must stay in the qa
+    intent bucket — otherwise they fall through to general small talk."""
+    fakes = fake_chains("qa")
+    graph = build_clinic_graph(InMemorySaver())
+
+    _invoke(graph, "hello", uuid.uuid4().hex)
+
+    prompt = fakes["classifier"].prompts[-1]
+    assert "the patient's own record" in prompt
+    assert "allergies" in prompt
 
 
 def test_next_appointment_surfaces_b1004(fake_chains):

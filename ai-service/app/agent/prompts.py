@@ -6,8 +6,9 @@ These are str.format templates: literal braces in prompt text must be doubled.
 CLASSIFIER_SYSTEM = """You are the intent router for a clinic assistant chat. \
 Classify the patient's LATEST message into exactly one intent:
 
-- qa: questions about clinics, doctors, treatments, prices, or requests for a \
-recommendation (clinic-domain knowledge needed).
+- qa: questions about clinics, doctors, treatments, prices, requests for a \
+recommendation, or the patient's own record — allergies, medical or visit \
+history, profile (clinic-domain knowledge needed).
 - check_bookings: asking about the patient's own existing or upcoming \
 appointments/bookings.
 - book_appointment: wants to book a new appointment, or is providing details \
@@ -65,8 +66,12 @@ catalog rows provided — never invent clinics, doctors, treatments or prices.
 - Cite the row ID in parentheses right after each claim, e.g. (T005), (D104).
 - Weigh the patient's context (history, allergies, upcoming bookings) when \
 recommending; mention price, duration or preparation from the rows when relevant.
+- If the message suggests an urgent or life-threatening situation, lead with the \
+retrieved clinics' emergency instructions.
 - If the retrieved rows cannot answer the question, say so plainly and list what \
 you can help with: treatments, doctors, clinics, existing bookings, new bookings.
+- When a requested service is not among the retrieved rows, say so and enumerate \
+what the retrieved rows do offer.
 Be concise and warm."""
 
 QA_USER = """Conversation so far:
@@ -154,7 +159,8 @@ def render_catalog(treatments: list[dict], doctors: list[dict], clinics: list[di
             clinics,
             lambda c: (
                 f"[{c['clinic_id']}] {c['clinic_name']} | {c['address']} | {c['phone']} | "
-                f"hours: {c['operating_hours']}"
+                f"hours: {c['operating_hours']} | cancellation: {c['cancellation_policy']} | "
+                f"emergency: {c['emergency_instructions']}"
             ),
         ),
     ))
@@ -171,10 +177,16 @@ def render_patient_context(ctx: dict | None) -> str:
     ]
     if ctx.get("treatment_history"):
         lines.append("Treatment history:")
-        lines += [
-            f"- {h['visit_date']} {h['chief_complaint']} — {h['diagnosis']} ({h['doctor_id']})"
-            for h in ctx["treatment_history"]
-        ]
+        for h in ctx["treatment_history"]:
+            line = (
+                f"- {h['visit_date']} {h['chief_complaint']} — {h['diagnosis']} "
+                f"({h.get('doctor_name') or h['doctor_id']})"
+            )
+            if h.get("prescribed_medication"):
+                line += f" | medication: {h['prescribed_medication']}"
+            if h.get("doctor_notes"):
+                line += f" | notes: {h['doctor_notes']}"
+            lines.append(line)
     if ctx.get("upcoming_bookings"):
         lines.append("Upcoming bookings:")
         lines += [

@@ -19,7 +19,7 @@ from app.core.config import settings
 
 # Canned catalog mirroring the seed rows (fields the nodes read)
 DOCTORS = [
-    {"doctor_id": "D101", "clinic_id": "C001", "full_name": "Dr. Sarah Jenkins", "specialty": "General Practice", "languages_spoken": "English, Spanish", "consultation_fee_usd": "150.00", "bio": "Board-certified family physician."},
+    {"doctor_id": "D101", "clinic_id": "C001", "full_name": "Dr. Sarah Jenkins", "specialty": "General Practice", "languages_spoken": "English, Spanish", "consultation_fee_usd": "150.00", "bio": "Board-certified family physician with over 12 years of experience in preventative care and chronic disease management."},
     {"doctor_id": "D102", "clinic_id": "C001", "full_name": "Dr. Michael Chang", "specialty": "Pediatrics", "languages_spoken": "English, Mandarin", "consultation_fee_usd": "180.00", "bio": "Pediatric specialist."},
     {"doctor_id": "D103", "clinic_id": "C002", "full_name": "Dr. Elena Rostova", "specialty": "Dermatology", "languages_spoken": "English, Russian", "consultation_fee_usd": "220.00", "bio": "Dermatologist specializing in eczema and acne treatments."},
     {"doctor_id": "D104", "clinic_id": "C001", "full_name": "Dr. James Wilson", "specialty": "Orthopedics", "languages_spoken": "English", "consultation_fee_usd": "250.00", "bio": "Orthopedic specialist focusing on joint pain and sports injuries."},
@@ -53,7 +53,7 @@ PATIENT_CONTEXT = {
         "known_allergies": "Penicillin, Peanuts", "emergency_contact": "Jane Doe (Spouse) - +1-555-018-3312",
     },
     "treatment_history": [
-        {"record_id": "H9002", "patient_id": "P001", "doctor_id": "D101", "visit_date": "2026-04-12",
+        {"record_id": "H9002", "patient_id": "P001", "doctor_id": "D101", "doctor_name": "Dr. Sarah Jenkins", "visit_date": "2026-04-12",
          "chief_complaint": "Annual routine health checkup.", "diagnosis": "Healthy / Normal Range",
          "prescribed_medication": "Multivitamins", "doctor_notes": "Blood pressure normal."},
     ],
@@ -128,8 +128,9 @@ class FakeTool:
 def catalog_fakes(monkeypatch):
     """install(...) → patches the catalog/patient/booking tool symbols at their
     consumer modules (qa, bookings_query, runtime) with seed-shaped data. Mirrors
-    the backend's contains-match (treatments: name/category; doctors: specialty).
-    Returns the FakeTool handles for call assertions."""
+    the backend's contains-match (treatments: name/category; doctors: specialty
+    + name/languages/bio via search; clinics: id + name/address/hours/policies
+    via search). Returns the FakeTool handles for call assertions."""
 
     def install(
         treatments: list = TREATMENTS,
@@ -141,13 +142,23 @@ def catalog_fakes(monkeypatch):
         bookings_error: Exception | None = None,
         context_error: Exception | None = None,
     ):
-        def fake_search_doctors(specialty: str | None = None) -> list[dict]:
+        def fake_search_doctors(specialty: str | None = None, search: str | None = None) -> list[dict]:
+            # mirrors the backend: specialty filter OR-folded with a generic search
+            # over name/specialty/languages/bio
             if catalog_error:
                 raise catalog_error
+            rows = doctors
             if specialty:
                 needle = specialty.casefold()
-                return [d for d in doctors if needle in d["specialty"].casefold()]
-            return list(doctors)
+                rows = [d for d in rows if needle in d["specialty"].casefold()]
+            if search:
+                needle = search.casefold()
+                rows = [
+                    d
+                    for d in rows
+                    if any(needle in str(d[f]).casefold() for f in ("full_name", "specialty", "languages_spoken", "bio"))
+                ]
+            return list(rows)
 
         def fake_search_treatments(search: str | None = None) -> list[dict]:
             if catalog_error:
@@ -161,12 +172,22 @@ def catalog_fakes(monkeypatch):
                 if needle in t["treatment_name"].casefold() or needle in t["category"].casefold()
             ]
 
-        def fake_get_clinics(clinic_id: str | None = None) -> list[dict]:
+        def fake_get_clinics(clinic_id: str | None = None, search: str | None = None) -> list[dict]:
+            # mirrors the backend: clinic_id filter OR-folded with a generic search
+            # over name/address/hours/cancellation/emergency
             if catalog_error:
                 raise catalog_error
+            rows = clinics
             if clinic_id:
-                return [c for c in clinics if c["clinic_id"] == clinic_id]
-            return list(clinics)
+                rows = [c for c in rows if c["clinic_id"] == clinic_id]
+            if search:
+                needle = search.casefold()
+                rows = [
+                    c
+                    for c in rows
+                    if any(needle in str(c[f]).casefold() for f in ("clinic_name", "address", "operating_hours", "cancellation_policy", "emergency_instructions"))
+                ]
+            return list(rows)
 
         context_tool = FakeTool(result=patient_context, error=context_error)
         bookings_tool = FakeTool(result=bookings, error=bookings_error)
