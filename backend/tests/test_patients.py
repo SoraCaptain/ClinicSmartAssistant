@@ -17,5 +17,15 @@ def test_patient_context_p001(client):
     assert {b["booking_id"] for b in ctx["upcoming_bookings"]} == expected_upcoming
 
 
+def test_patient_context_history_joins_doctor_name(client):
+    """History rows carry the joined doctor identity + clinical fields (§5.3 widening)."""
+    history = client.get("/api/patients/P001/context").json()["treatment_history"]
+    h9002 = history[0]
+    assert h9002["doctor_id"] == "D101"
+    assert h9002["doctor_name"] == "Dr. Sarah Jenkins"
+    assert h9002["prescribed_medication"] == "Multivitamins"
+    assert "Recommended light exercise" in h9002["doctor_notes"]
+
+
 def test_patient_context_unknown_404(client):
     assert client.get("/api/patients/P999/context").status_code == 404

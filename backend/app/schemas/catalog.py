@@ -61,6 +61,7 @@ class HistoryOut(BaseModel):
     record_id: str
     patient_id: str
     doctor_id: str
+    doctor_name: str
     visit_date: date
     chief_complaint: str
     diagnosis: str

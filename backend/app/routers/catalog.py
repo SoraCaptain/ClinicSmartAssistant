@@ -9,13 +9,21 @@ router = APIRouter(prefix="/api", tags=["catalog"])
 
 
 @router.get("/clinics", response_model=list[ClinicOut])
-def list_clinics(clinic_id: str | None = Query(default=None), db: Session = Depends(get_db)):
-    return catalog_service.get_clinics(db, clinic_id=clinic_id)
+def list_clinics(
+    clinic_id: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    return catalog_service.get_clinics(db, clinic_id=clinic_id, search=search)
 
 
 @router.get("/doctors", response_model=list[DoctorOut])
-def list_doctors(specialty: str | None = Query(default=None), db: Session = Depends(get_db)):
-    return catalog_service.get_doctors(db, specialty=specialty)
+def list_doctors(
+    specialty: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    return catalog_service.get_doctors(db, specialty=specialty, search=search)
 
 
 @router.get("/treatments", response_model=list[TreatmentOut])

@@ -36,3 +36,48 @@ def test_search_escapes_like_wildcards(client):
     """% and _ are literal contains-match text, not SQL wildcards (§5.3)."""
     assert client.get("/api/doctors", params={"specialty": "%"}).json() == []
     assert client.get("/api/treatments", params={"search": "_"}).json() == []
+
+
+def test_doctors_search_matches_name(client):
+    hits = client.get("/api/doctors", params={"search": "rostova"}).json()
+    assert [d["doctor_id"] for d in hits] == ["D103"]
+
+
+def test_doctors_search_matches_bio(client):
+    hits = client.get("/api/doctors", params={"search": "eczema"}).json()
+    assert [d["doctor_id"] for d in hits] == ["D103"]
+
+
+def test_doctors_search_matches_language(client):
+    hits = client.get("/api/doctors", params={"search": "Mandarin"}).json()
+    assert [d["doctor_id"] for d in hits] == ["D102"]
+
+
+def test_doctors_search_unmatched_empty(client):
+    assert client.get("/api/doctors", params={"search": "oncology"}).json() == []
+
+
+def test_doctors_specialty_still_filters_alongside_search_param(client):
+    """`specialty` keeps its §5.3 behavior after the generic `search` widening."""
+    ortho = client.get("/api/doctors", params={"specialty": "ortho"}).json()
+    assert [d["doctor_id"] for d in ortho] == ["D104"]
+
+
+def test_clinics_search_matches_name(client):
+    hits = client.get("/api/clinics", params={"search": "metro"}).json()
+    assert [c["clinic_id"] for c in hits] == ["C001"]
+
+
+def test_clinics_search_matches_cancellation_policy(client):
+    hits = client.get("/api/clinics", params={"search": "24 hours"}).json()
+    assert [c["clinic_id"] for c in hits] == ["C001"]
+
+
+def test_clinics_search_matches_emergency_instructions(client):
+    hits = client.get("/api/clinics", params={"search": "911"}).json()
+    assert [c["clinic_id"] for c in hits] == ["C001"]
+
+
+def test_clinics_clinic_id_still_filters(client):
+    one = client.get("/api/clinics", params={"clinic_id": "C002"}).json()
+    assert [c["clinic_id"] for c in one] == ["C002"]

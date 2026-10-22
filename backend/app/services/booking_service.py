@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Booking, Clinic, Doctor, Patient, Treatment, TreatmentHistory
 from app.schemas.booking import BookingCreate, BookingJoined
+from app.schemas.catalog import HistoryOut
 
 
 def _new_booking_id() -> str:
@@ -75,13 +76,25 @@ def get_patient_context(db: Session, patient_id: str) -> dict:
     patient = db.scalar(select(Patient).where(Patient.patient_id == patient_id))
     if patient is None:
         raise HTTPException(status_code=404, detail=f"Unknown patient_id: {patient_id}")
-    history = list(
-        db.scalars(
-            select(TreatmentHistory)
+    history = [
+        HistoryOut(
+            record_id=h.record_id,
+            patient_id=h.patient_id,
+            doctor_id=h.doctor_id,
+            visit_date=h.visit_date,
+            chief_complaint=h.chief_complaint,
+            diagnosis=h.diagnosis,
+            prescribed_medication=h.prescribed_medication,
+            doctor_notes=h.doctor_notes,
+            doctor_name=doctor_name,
+        )
+        for h, doctor_name in db.execute(
+            select(TreatmentHistory, Doctor.full_name)
+            .join(Doctor, TreatmentHistory.doctor_id == Doctor.doctor_id)
             .where(TreatmentHistory.patient_id == patient_id)
             .order_by(TreatmentHistory.visit_date.desc())
         )
-    )
+    ]
     upcoming = list_bookings(db, patient_id=patient_id)
     today = date.today()
     return {
