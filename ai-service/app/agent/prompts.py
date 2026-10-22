@@ -49,7 +49,14 @@ Latest message: {message}"""
 SLOT_EXTRACTION_SYSTEM = """You extract appointment-booking details from a clinic \
 patient's latest message. Today's date: {today}.
 
+Conversation so far:
+{history}
+
 Booking arranged so far: {draft}
+
+Use the conversation to resolve what the latest message refers to: when a treatment \
+or doctor is mentioned indirectly ("it", "that one", "the option we discussed \
+earlier"), return the entity the conversation already established.
 
 Return ONLY the fields the latest message states or corrects; null for the rest:
 - doctor: the doctor's name exactly as mentioned (e.g. "Dr. Wilson")

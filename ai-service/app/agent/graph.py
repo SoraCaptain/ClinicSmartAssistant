@@ -1,12 +1,15 @@
 """Graph assembly (DESIGN §5.2): every turn starts at classify_intent (P1 — no sticky
-intent). Booking turns fan out into the slot-filling nodes; execute_booking sits
-behind the explicit-confirmation gate (P2). finalize_reply persists the assistant turn."""
+intent). Booking turns fan out into the slot-filling nodes (an inconsistent
+doctor↔treatment pair routes to clarify_mismatch before any summary);
+execute_booking sits behind the explicit-confirmation gate (P2). finalize_reply
+persists the assistant turn."""
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.nodes.booking_flow import (
     ask_missing,
+    clarify_mismatch,
     confirm_summary,
     execute_booking,
     extract_slots,
@@ -41,6 +44,8 @@ def route_intent(state: ClinicGraphState) -> str:
 
 def route_after_extract(state: ClinicGraphState) -> str:
     draft = state.get("booking_draft") or {}
+    if draft.get("mismatch"):
+        return "clarify_mismatch"  # inconsistent pair → clarify before any summary (TEST §8)
     return "ask_missing" if missing_slots(draft) else "confirm_summary"
 
 
@@ -58,6 +63,7 @@ def build_clinic_graph(checkpointer: BaseCheckpointSaver | None = None):
         ("general_reply", general_reply),
         ("extract_slots", extract_slots),
         ("ask_missing", ask_missing),
+        ("clarify_mismatch", clarify_mismatch),
         ("confirm_summary", confirm_summary),
         ("execute_booking", execute_booking),
     ):
@@ -73,9 +79,13 @@ def build_clinic_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_conditional_edges(
         "extract_slots",
         route_after_extract,
-        {"ask_missing": "ask_missing", "confirm_summary": "confirm_summary"},
+        {
+            "ask_missing": "ask_missing",
+            "clarify_mismatch": "clarify_mismatch",
+            "confirm_summary": "confirm_summary",
+        },
     )
-    for name in (*INTENT_NODES.values(), "ask_missing", "confirm_summary", "execute_booking"):
+    for name in (*INTENT_NODES.values(), "ask_missing", "clarify_mismatch", "confirm_summary", "execute_booking"):
         graph.add_edge(name, "finalize_reply")
     graph.add_edge("finalize_reply", END)
     return graph.compile(checkpointer=checkpointer)

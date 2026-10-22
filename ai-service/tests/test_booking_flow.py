@@ -4,10 +4,12 @@ confirmation never call it. Slots accumulate across turns (P1); a pending draft
 neither traps non-booking turns nor leaks into them."""
 
 import uuid
+from datetime import date, timedelta
 
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agent.graph import build_clinic_graph
+from tests.conftest import TREATMENTS
 
 BOOK_INTENT = "book_appointment"
 FULL_PAYLOAD = {
@@ -37,13 +39,14 @@ def _invoke(graph, message: str, thread_id: str) -> dict:
 
 
 def test_full_booking_books_exactly_once_via_post(fake_chains, booking_fakes):
-    """Slot-by-slot across 5 turns → ask, ask, ask, confirm, book (slice-3 done-when);
-    a post-success "yes" cannot re-fire the booking (P2 exactly-once)."""
-    fake_chains([BOOK_INTENT] * 4 + [(BOOK_INTENT, True)] * 2)
+    """Slot-by-slot across turns → auto-filled doctor + ask date, ask time, confirm,
+    book (slice-3 done-when; Wilson is the unique Orthopedics match, so turn 1
+    auto-applies him instead of asking); a post-success "yes" cannot re-fire the
+    booking (P2 exactly-once)."""
+    fake_chains([BOOK_INTENT] * 3 + [(BOOK_INTENT, True)] * 2)
     fakes = booking_fakes(
         slots=[
             {"treatment": "joint pain consultation"},
-            {"doctor": "Dr. Wilson"},
             {"booking_date": "2026-11-21"},
             {"booking_time": "09:30"},
             {},
@@ -54,29 +57,28 @@ def test_full_booking_books_exactly_once_via_post(fake_chains, booking_fakes):
     thread = uuid.uuid4().hex
 
     r1 = _invoke(graph, "I'd like to book a joint pain consultation", thread)
-    assert "recommend" in r1["reply"] and "Dr. James Wilson" in r1["reply"]
+    assert "Dr. James Wilson is the matching Orthopedics specialist" in r1["reply"]
+    assert r1["booking_draft"]["doctor_id"] == "D104" and r1["booking_draft"]["doctor_auto"] is True
+    assert "Which date" in r1["reply"]
 
-    r2 = _invoke(graph, "Dr. Wilson please", thread)
-    assert "Which date" in r2["reply"]
+    r2 = _invoke(graph, "November 21st", thread)
+    assert "What time" in r2["reply"]
 
-    r3 = _invoke(graph, "November 21st", thread)
-    assert "What time" in r3["reply"]
-
-    r4 = _invoke(graph, "9:30 in the morning", thread)
-    assert "booking summary" in r4["reply"]
+    r3 = _invoke(graph, "9:30 in the morning", thread)
+    assert "booking summary" in r3["reply"]
     for fragment in ("Joint & Pain Consultation", "$230.00", "Dr. James Wilson", "2026-11-21", "09:30"):
-        assert fragment in r4["reply"]
-    assert r4["booking_draft"]["awaiting_confirmation"] is True
+        assert fragment in r3["reply"]
+    assert r3["booking_draft"]["awaiting_confirmation"] is True
     assert fakes["create"].calls == []  # no confirmation yet → no POST
 
-    r5 = _invoke(graph, "yes, book it", thread)
-    assert "B9f2a1" in r5["reply"]
-    assert r5["booking_created"]["booking_id"] == "B9f2a1"
-    assert r5["booking_draft"] == {}
+    r4 = _invoke(graph, "yes, book it", thread)
+    assert "B9f2a1" in r4["reply"]
+    assert r4["booking_created"]["booking_id"] == "B9f2a1"
+    assert r4["booking_draft"] == {}
     assert fakes["create"].calls == [FULL_PAYLOAD]  # exactly once, correct payload
 
-    r6 = _invoke(graph, "yes", thread)  # draft cleared → fresh flow, no re-fire
-    assert r6["reply"] == "Which treatment would you like to book?"
+    r5 = _invoke(graph, "yes", thread)  # draft cleared → fresh flow, no re-fire
+    assert r5["reply"] == "Which treatment would you like to book?"
     assert fakes["create"].calls == [FULL_PAYLOAD]
 
 
@@ -160,7 +162,8 @@ def test_unresolvable_entities_ask_for_clarification(fake_chains, booking_fakes)
 
 def test_multiword_mention_resolves_via_token_fallback(fake_chains, booking_fakes):
     """'joint pain consultation' is not a substring of 'Joint & Pain Consultation';
-    resolution falls back to significant tokens ('joint' → T005)."""
+    resolution falls back to significant tokens ('joint' → T005); the unique
+    Orthopedics match is then auto-applied and stated."""
     fake_chains(BOOK_INTENT)
     booking_fakes(slots=[{"treatment": "joint pain consultation"}])
     graph = build_clinic_graph(InMemorySaver())
@@ -168,7 +171,7 @@ def test_multiword_mention_resolves_via_token_fallback(fake_chains, booking_fake
     result = _invoke(graph, "I'd like to book a joint pain consultation", uuid.uuid4().hex)
 
     assert result["booking_draft"]["treatment_id"] == "T005"
-    assert "recommend" in result["reply"]
+    assert "matching Orthopedics specialist" in result["reply"]
 
 
 def test_failed_remention_clears_stale_display_fields(fake_chains, booking_fakes):
@@ -226,3 +229,123 @@ def test_classifier_prompt_carries_pending_draft(fake_chains, booking_fakes):
     assert "Booking being arranged" in prompt
     assert "awaiting confirmation: yes" in prompt
     assert "Joint & Pain Consultation" in prompt
+
+
+def test_extraction_prompt_carries_conversation_history(fake_chains, booking_fakes):
+    """Extraction must see earlier turns so references ('it', 'the recommended
+    option') can resolve to the entity the conversation established."""
+    fake_chains([BOOK_INTENT] * 2)
+    fakes = booking_fakes(
+        slots=[{"treatment": "joint pain consultation"}, {"booking_date": "2026-11-28"}]
+    )
+    graph = build_clinic_graph(InMemorySaver())
+    thread = uuid.uuid4().hex
+
+    r1 = _invoke(graph, "I'd like to book a joint pain consultation", thread)
+    _invoke(graph, "the 28th of November", thread)
+
+    prompt = fakes["slots"].prompts[1]
+    assert "Conversation so far:" in prompt
+    assert "Patient: I'd like to book a joint pain consultation" in prompt
+    assert f"Assistant: {r1['reply']}" in prompt
+    assert "Latest message: the 28th of November" in prompt
+
+
+def test_unique_doctor_autofill_reaches_confirm_with_note(fake_chains, booking_fakes):
+    """T003's Dermatology category has exactly one doctor → auto-applied and stated
+    in the confirm summary (no open-ended doctor question, no booking yet)."""
+    fake_chains(BOOK_INTENT)
+    fakes = booking_fakes(
+        slots=[{"treatment": "dermatology consultation", "booking_date": "2026-11-20", "booking_time": "14:30"}]
+    )
+    graph = build_clinic_graph(InMemorySaver())
+
+    r = _invoke(graph, "book a dermatology consultation on 2026-11-20 at 2:30pm", uuid.uuid4().hex)
+
+    draft = r["booking_draft"]
+    assert draft["doctor_id"] == "D103" and draft["doctor_auto"] is True
+    assert "booking summary" in r["reply"]
+    assert "Dr. Elena Rostova" in r["reply"]
+    assert "auto-matched" in r["reply"]
+    assert fakes["create"].calls == []
+
+
+def test_unique_treatment_autofill_for_doctor_specialty(fake_chains, booking_fakes):
+    """D104's Orthopedics specialty matches exactly one treatment → auto-applied
+    and stated in the confirm summary."""
+    fake_chains(BOOK_INTENT)
+    fakes = booking_fakes(
+        slots=[{"doctor": "Dr. Wilson", "booking_date": "2026-11-21", "booking_time": "10:00"}]
+    )
+    graph = build_clinic_graph(InMemorySaver())
+
+    r = _invoke(graph, "book Dr. Wilson on 2026-11-21 at 10am", uuid.uuid4().hex)
+
+    draft = r["booking_draft"]
+    assert draft["treatment_id"] == "T005" and draft["treatment_auto"] is True
+    assert "Joint & Pain Consultation" in r["reply"]
+    assert "auto-matched" in r["reply"]
+    assert fakes["create"].calls == []
+
+
+def test_unresolved_treatment_lists_available_treatments(fake_chains, booking_fakes):
+    """An unresolvable treatment mention enumerates the catalog instead of asking
+    an empty open-ended question."""
+    fake_chains(BOOK_INTENT)
+    booking_fakes(slots=[{"treatment": "aromatherapy massage"}])
+    graph = build_clinic_graph(InMemorySaver())
+
+    r = _invoke(graph, "book an aromatherapy massage", uuid.uuid4().hex)
+
+    assert "couldn't find a treatment matching \"aromatherapy massage\"" in r["reply"]
+    for row in TREATMENTS:
+        assert row["treatment_name"] in r["reply"]
+
+
+def test_invalid_calendar_date_is_rejected_then_reasked(fake_chains, booking_fakes):
+    """An impossible calendar date never fills the slot nor books; a later valid
+    date completes the draft and clears the complaint (no stale resurrection)."""
+    fake_chains([BOOK_INTENT, BOOK_INTENT, (BOOK_INTENT, True)])
+    fakes = booking_fakes(
+        slots=[
+            {"treatment": "joint pain consultation", "doctor": "Dr. Wilson",
+             "booking_date": "2027-02-30", "booking_time": "10:00"},
+            {"booking_date": "2027-03-01"},
+            {},
+        ]
+    )
+    graph = build_clinic_graph(InMemorySaver())
+    thread = uuid.uuid4().hex
+
+    r1 = _invoke(graph, "book joint pain with Dr. Wilson on Feb 30 2027 at 10am", thread)
+    draft = r1["booking_draft"]
+    assert draft["treatment_id"] == "T005" and draft["doctor_id"] == "D104"  # other slots kept
+    assert draft["booking_date"] is None
+    assert "2027-02-30" in r1["reply"] and "is not a valid date" in r1["reply"]
+    assert fakes["create"].calls == []
+
+    r2 = _invoke(graph, "March 1st then", thread)
+    assert r2["booking_draft"]["booking_date"] == "2027-03-01"
+    assert "date_issue" not in r2["booking_draft"]
+    assert "booking summary" in r2["reply"] and "2027-03-01" in r2["reply"]
+    assert fakes["create"].calls == []
+
+    r3 = _invoke(graph, "yes", thread)
+    assert fakes["create"].calls == [{**FULL_PAYLOAD, "booking_date": "2027-03-01", "booking_time": "10:00"}]
+
+
+def test_past_date_is_rejected(fake_chains, booking_fakes):
+    """A date before today never fills the slot nor books."""
+    past = (date.today() - timedelta(days=2)).isoformat()
+    fake_chains(BOOK_INTENT)
+    fakes = booking_fakes(
+        slots=[{"treatment": "joint pain consultation", "booking_date": past, "booking_time": "10:00"}]
+    )
+    graph = build_clinic_graph(InMemorySaver())
+
+    r = _invoke(graph, f"book joint pain on {past} at 10am", uuid.uuid4().hex)
+
+    assert r["booking_draft"]["booking_date"] is None
+    assert f"{past} is in the past" in r["reply"]
+    assert "valid future date" in r["reply"]
+    assert fakes["create"].calls == []

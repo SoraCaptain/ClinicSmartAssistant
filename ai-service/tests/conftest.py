@@ -26,6 +26,9 @@ DOCTORS = [
 ]
 TREATMENTS = [
     {"treatment_id": "T001", "treatment_name": "General Health Checkup", "category": "Preventative Care", "duration_minutes": 30, "price_usd": "150.00", "pre_treatment_instructions": "Fast for at least 8 hours prior to your visit."},
+    {"treatment_id": "T002", "treatment_name": "Pediatric Vaccination", "category": "Pediatrics", "duration_minutes": 15, "price_usd": "80.00", "pre_treatment_instructions": "Please bring the child's official vaccination record booklet."},
+    {"treatment_id": "T003", "treatment_name": "Dermatology Consultation", "category": "Dermatology", "duration_minutes": 30, "price_usd": "200.00", "pre_treatment_instructions": "Ensure skin is clean and free of makeup or heavy lotions on the area being evaluated."},
+    {"treatment_id": "T004", "treatment_name": "Flu Shot Injection", "category": "Immunization", "duration_minutes": 15, "price_usd": "40.00", "pre_treatment_instructions": "No prior preparation required. Inform doctor if you currently have a fever."},
     {"treatment_id": "T005", "treatment_name": "Joint & Pain Consultation", "category": "Orthopedics", "duration_minutes": 45, "price_usd": "230.00", "pre_treatment_instructions": "Wear loose-fitting clothing."},
 ]
 CLINICS = [
@@ -256,11 +259,21 @@ def booking_fakes(monkeypatch):
             errors=create_errors,
         )
 
-        def fake_search_doctors(specialty: str | None = None) -> list[dict]:
+        def fake_search_doctors(specialty: str | None = None, search: str | None = None) -> list[dict]:
+            # mirrors the backend: specialty contains-filter AND-folded with a
+            # generic search over name/specialty/languages/bio
+            rows = DOCTORS
             if specialty:
                 needle = specialty.casefold()
-                return [d for d in DOCTORS if needle in d["specialty"].casefold()]
-            return list(DOCTORS)
+                rows = [d for d in rows if needle in d["specialty"].casefold()]
+            if search:
+                needle = search.casefold()
+                rows = [
+                    d
+                    for d in rows
+                    if any(needle in str(d[f]).casefold() for f in ("full_name", "specialty", "languages_spoken", "bio"))
+                ]
+            return list(rows)
 
         def fake_search_treatments(search: str | None = None) -> list[dict]:
             # mirrors the backend's case-insensitive contains-match on name/category

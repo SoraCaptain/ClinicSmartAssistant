@@ -1,6 +1,8 @@
 """Booking flow nodes (DESIGN §5.2): extract_slots resolves the latest message into
 draft slots (all catalog/booking data via REST tools, P3), ask_missing renders the
-next question, confirm_summary renders doctor+treatment+date+time+fee behind
+next question (with unique-match auto-applied statements, catalog enumeration and
+date complaints), clarify_mismatch renders an inconsistent doctor↔treatment pair,
+confirm_summary renders doctor+treatment+date+time+fee behind
 awaiting_confirmation, execute_booking fires create_booking only past the explicit
 confirmation gate (P2 — the gate itself lives in graph routing)."""
 
@@ -14,6 +16,7 @@ from app.agent.prompts import (
     SLOT_EXTRACTION_SYSTEM,
     SLOT_EXTRACTION_USER,
     render_booking_draft,
+    render_history,
 )
 from app.agent.state import ClinicGraphState
 from app.agent.tools.booking_tools import create_booking
@@ -80,24 +83,73 @@ def _resolve_treatment(raw: str) -> dict | None:
     return None
 
 
+def _apply_treatment(draft: dict, row: dict) -> None:
+    draft.update(
+        treatment_id=row["treatment_id"],
+        treatment_name=row["treatment_name"],
+        category=row["category"],
+        duration_minutes=row["duration_minutes"],
+        price_usd=row["price_usd"],
+    )
+    draft.pop("treatment_raw", None)
+    draft.pop("treatment_options", None)
+
+
+def _apply_doctor(draft: dict, row: dict) -> None:
+    draft.update(
+        doctor_id=row["doctor_id"],
+        doctor_name=row["full_name"],
+        doctor_specialty=row["specialty"],
+    )
+    draft.pop("doctor_raw", None)
+    draft.pop("doctor_options", None)
+
+
+def _category_doctor_matches(category: str) -> list[dict]:
+    """Doctors matching a treatment's category: the specialty filter first, then a
+generic search bridging through name/specialty/languages/bio (a 'Preventative
+Care' category reaches the General Practice doctor only through her bio)."""
+    return search_doctors(specialty=category) or search_doctors(search=category)
+
+
+def _specialty_treatment_candidates(specialty: str) -> list[dict]:
+    """Treatments matching a doctor's specialty: the catalog search plus a two-way
+category⊂⊃specialty containment pass (the search needle alone is one-directional)."""
+    rows = search_treatments(search=specialty)
+    seen = {row["treatment_id"] for row in rows}
+    needle = specialty.casefold()
+    for row in search_treatments():
+        category = row["category"].casefold()
+        if (needle in category or category in needle) and row["treatment_id"] not in seen:
+            seen.add(row["treatment_id"])
+            rows.append(row)
+    return rows
+
+
+def _date_issue(value: str) -> str | None:
+    """Why `value` cannot be booked, or None when it is a valid future date."""
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        return f'"{value}" is not a valid date'
+    return f"{value} is in the past" if parsed < date.today() else None
+
+
 def extract_slots(state: ClinicGraphState) -> dict:
     draft = dict(state.get("booking_draft") or {})
+    # Derived per turn — dropped up front so a later correction can never resurrect
+    # a stale auto-applied note, mismatch verdict, or date complaint.
+    for key in ("doctor_auto", "treatment_auto", "mismatch", "date_issue"):
+        draft.pop(key, None)
     extracted = get_slot_extractor().invoke(
-        f"{SLOT_EXTRACTION_SYSTEM.format(today=date.today().isoformat(), draft=render_booking_draft(draft))}"
+        f"{SLOT_EXTRACTION_SYSTEM.format(today=date.today().isoformat(), history=render_history(state.get('messages', [])), draft=render_booking_draft(draft))}"
         f"\n\n{SLOT_EXTRACTION_USER.format(message=state['user_message'])}"
     )
     draft["awaiting_confirmation"] = False  # new or corrected details re-open the draft
     if extracted.treatment:
         row = _resolve_treatment(extracted.treatment)
         if row:
-            draft.update(
-                treatment_id=row["treatment_id"],
-                treatment_name=row["treatment_name"],
-                category=row["category"],
-                duration_minutes=row["duration_minutes"],
-                price_usd=row["price_usd"],
-            )
-            draft.pop("treatment_raw", None)
+            _apply_treatment(draft, row)
         else:
             # a failed re-resolution must also clear the old row's display fields:
             # prompts and ask/confirm rendering read name/category from the draft
@@ -110,15 +162,11 @@ def extract_slots(state: ClinicGraphState) -> dict:
                 doctor_options=None,
                 treatment_raw=extracted.treatment,
             )
+            draft["treatment_options"] = search_treatments()  # ask_missing enumerates these
     if extracted.doctor:
         match = _match_doctor(extracted.doctor, search_doctors())
         if match:
-            draft.update(
-                doctor_id=match["doctor_id"],
-                doctor_name=match["full_name"],
-                doctor_specialty=match["specialty"],
-            )
-            draft.pop("doctor_raw", None)
+            _apply_doctor(draft, match)
         else:
             draft.update(
                 doctor_id=None,
@@ -127,13 +175,46 @@ def extract_slots(state: ClinicGraphState) -> dict:
                 doctor_raw=extracted.doctor,
             )
     if extracted.booking_date:
-        draft["booking_date"] = extracted.booking_date
+        issue = _date_issue(extracted.booking_date)
+        if issue:
+            draft["booking_date"] = None  # an invalid/past date never books, even over a good one
+            draft["date_issue"] = issue
+        else:
+            draft["booking_date"] = extracted.booking_date
     if extracted.booking_time:
         draft["booking_time"] = extracted.booking_time
+    # Unique-match auto-fill: don't ask an open-ended question a single catalog row
+    # already answers. An explicit-but-unresolved mention (…_raw set) is the
+    # patient's own choice — never overridden by an auto-fill.
+    if draft.get("treatment_id") and not draft.get("doctor_id") and not draft.get("doctor_raw"):
+        candidates = _category_doctor_matches(draft["category"])
+        if len(candidates) == 1:
+            _apply_doctor(draft, candidates[0])
+            draft["doctor_auto"] = True
+    if draft.get("doctor_id") and not draft.get("treatment_id") and not draft.get("treatment_raw"):
+        candidates = _specialty_treatment_candidates(draft["doctor_specialty"])
+        if len(candidates) == 1:
+            _apply_treatment(draft, candidates[0])
+            draft["treatment_auto"] = True
     # Treatment chosen but no doctor yet → recommend specialty/category matches (§5.2);
     # fall back to all doctors when no specialty matches the treatment's category.
     if draft.get("treatment_id") and not draft.get("doctor_id"):
         draft["doctor_options"] = search_doctors(specialty=draft["category"]) or search_doctors()
+    # Both resolved but inconsistent → clarify instead of confirming; only when a
+    # better-matching doctor exists (a category no doctor covers is not a mismatch).
+    if draft.get("treatment_id") and draft.get("doctor_id"):
+        matches = _category_doctor_matches(draft["category"])
+        if matches and draft["doctor_id"] not in {d["doctor_id"] for d in matches}:
+            draft["mismatch"] = {
+                "doctors": [
+                    {"doctor_id": d["doctor_id"], "full_name": d["full_name"], "specialty": d["specialty"]}
+                    for d in matches
+                ],
+                "treatments": [
+                    {"treatment_id": t["treatment_id"], "treatment_name": t["treatment_name"]}
+                    for t in _specialty_treatment_candidates(draft["doctor_specialty"])
+                ],
+            }
     return {"booking_draft": draft}
 
 
@@ -143,10 +224,11 @@ def ask_missing(state: ClinicGraphState) -> dict:
     first = missing_slots(draft)[0]
     if first == "treatment":
         if draft.get("treatment_raw"):
-            reply = (
-                f"I couldn't find a treatment matching \"{draft['treatment_raw']}\". "
-                "Which treatment would you like?"
-            )
+            reply = f'I couldn\'t find a treatment matching "{draft["treatment_raw"]}".'
+            names = ", ".join(t["treatment_name"] for t in draft.get("treatment_options") or [])
+            if names:
+                reply += f" Available treatments: {names}."
+            reply += " Which treatment would you like?"
         else:
             reply = "Which treatment would you like to book?"
     elif first == "doctor":
@@ -168,10 +250,19 @@ def ask_missing(state: ClinicGraphState) -> dict:
         else:
             reply = "Which doctor would you like to see?"
     elif first == "date":
-        reply = "Which date would you like for the appointment? (e.g. 2026-11-21)"
+        if draft.get("date_issue"):
+            reply = f"{draft['date_issue']}. Please choose a valid future date."
+        else:
+            reply = "Which date would you like for the appointment? (YYYY-MM-DD)"
     else:
         reply = f"What time on {draft.get('booking_date')}? (e.g. 09:30)"
-    return {"reply": reply}
+    # Auto-applied unique matches are stated up front, not asked about (TEST §8).
+    notes = []
+    if draft.get("doctor_auto"):
+        notes.append(f"{draft['doctor_name']} is the matching {draft['doctor_specialty']} specialist.")
+    if draft.get("treatment_auto"):
+        notes.append(f"The matching {draft['doctor_specialty']} service is {draft['treatment_name']}.")
+    return {"reply": " ".join([*notes, reply])}
 
 
 def confirm_summary(state: ClinicGraphState) -> dict:
@@ -183,12 +274,33 @@ def confirm_summary(state: ClinicGraphState) -> dict:
         f"- Date: {draft['booking_date']}",
         f"- Time: {draft['booking_time']}",
     )
+    if draft.get("doctor_auto"):
+        lines += (f"- Note: {draft['doctor_name']} auto-matched as the only {draft['doctor_specialty']} specialist for this treatment.",)
+    if draft.get("treatment_auto"):
+        lines += (f"- Note: {draft['treatment_name']} auto-matched as the only {draft['doctor_specialty']} service for this doctor.",)
     reply = (
         "Here's your booking summary:\n"
         + "\n".join(lines)
         + "\nShall I go ahead and book it? (yes / no)"
     )
     return {"booking_draft": draft, "reply": reply}
+
+
+def clarify_mismatch(state: ClinicGraphState) -> dict:
+    """Pure rendering of a doctor↔treatment inconsistency (extract_slots stashed the
+    alternatives): the pair is clarified, never silently confirmed or booked."""
+    draft = state["booking_draft"]
+    mismatch = draft["mismatch"]
+    doctors = ", ".join(f"{d['full_name']} ({d['specialty']})" for d in mismatch["doctors"])
+    services = ", ".join(t["treatment_name"] for t in mismatch["treatments"])
+    reply = (
+        f"{draft['treatment_name']} matches {doctors}, while {draft['doctor_name']} "
+        f"specializes in {draft['doctor_specialty']}"
+    )
+    if services:
+        reply += f" ({services})"
+    reply += ". Which would you like?"
+    return {"reply": reply}
 
 
 def execute_booking(state: ClinicGraphState) -> dict:

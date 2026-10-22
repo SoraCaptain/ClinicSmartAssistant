@@ -15,6 +15,7 @@ INTENT_FAKE_REPLY = {
     "check_bookings": "Your next appointment is (B1004).",
     "general": "Hi there!",
 }
+BOOK_INTENT = "book_appointment"
 
 
 def _invoke(graph, message: str, thread_id: str) -> dict:
@@ -93,3 +94,60 @@ def test_classifier_prompt_carries_latest_message(fake_chains):
     prompt = fakes["classifier"].prompts[-1]
     assert "which doctor treats knee pain?" in prompt
     assert "(no earlier messages)" in prompt
+
+
+def test_mismatch_routes_to_clarify_and_never_books(fake_chains, booking_fakes):
+    """A treatment whose category clearly matches a DIFFERENT doctor routes to
+    clarify_mismatch instead of confirm: both alternatives are rendered and
+    create_booking never fires; the patient's correction re-enters extraction and
+    only then reaches the confirm → book path."""
+    fake_chains([BOOK_INTENT, BOOK_INTENT, (BOOK_INTENT, True)])
+    fakes = booking_fakes(
+        slots=[
+            {"treatment": "dermatology consultation", "doctor": "Dr. Wilson",
+             "booking_date": "2026-11-30", "booking_time": "10:00"},
+            {"doctor": "Dr. Elena Rostova"},
+            {},
+        ]
+    )
+    graph = build_clinic_graph(InMemorySaver())
+    thread = uuid.uuid4().hex
+
+    r1 = _invoke(graph, "book a dermatology consultation with Dr. Wilson on 2026-11-30 at 10am", thread)
+    assert "Dermatology Consultation matches Dr. Elena Rostova (Dermatology)" in r1["reply"]
+    assert "Dr. James Wilson specializes in Orthopedics (Joint & Pain Consultation)" in r1["reply"]
+    assert "Which would you like?" in r1["reply"]
+    assert r1["booking_draft"]["awaiting_confirmation"] is False
+    assert fakes["create"].calls == []
+
+    r2 = _invoke(graph, "Dr. Rostova then, please", thread)
+    assert r2["booking_draft"]["doctor_id"] == "D103"
+    assert "mismatch" not in r2["booking_draft"]
+    assert "booking summary" in r2["reply"] and "yes / no" in r2["reply"]
+    assert fakes["create"].calls == []
+
+    r3 = _invoke(graph, "yes", thread)
+    assert fakes["create"].calls == [
+        {"patient_id": "P001", "doctor_id": "D103", "treatment_id": "T003",
+         "booking_date": "2026-11-30", "booking_time": "10:00"}
+    ]
+
+
+def test_no_false_mismatch_without_matching_doctor(fake_chains, booking_fakes):
+    """Positive-evidence-only rule: when NO doctor matches the treatment's
+    category (T004 Immunization), the patient's chosen doctor is not flagged —
+    the pair goes straight to the confirmation gate."""
+    fake_chains(BOOK_INTENT)
+    fakes = booking_fakes(
+        slots=[{"treatment": "flu shot", "doctor": "Dr. Jenkins",
+                "booking_date": "2026-12-03", "booking_time": "10:00"}]
+    )
+    graph = build_clinic_graph(InMemorySaver())
+
+    r = _invoke(graph, "book a flu shot with Dr. Jenkins on 2026-12-03 at 10am", uuid.uuid4().hex)
+
+    assert "booking summary" in r["reply"]
+    assert "Flu Shot Injection" in r["reply"] and "Dr. Sarah Jenkins" in r["reply"]
+    assert r["booking_draft"]["awaiting_confirmation"] is True
+    assert "mismatch" not in r["booking_draft"]
+    assert fakes["create"].calls == []
