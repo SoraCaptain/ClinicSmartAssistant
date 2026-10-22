@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.logging import configure_logging
 from app.database import Base, SessionLocal, engine
-from app.routers import bookings, catalog, health, patients
+from app.routers import bookings, catalog, chat, health, patients
 from app.services.seed_service import seed
 
 configure_logging()
@@ -34,6 +34,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(chat.router)
 app.include_router(catalog.router)
 app.include_router(bookings.router)
 app.include_router(patients.router)
