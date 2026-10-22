@@ -58,6 +58,15 @@ Use the conversation to resolve what the latest message refers to: when a treatm
 or doctor is mentioned indirectly ("it", "that one", "the option we discussed \
 earlier"), return the entity the conversation already established.
 
+Return mentions and dates exactly as the message states them — never substitute or
+silently fix what the flow can catch downstream:
+- If the message names a treatment or doctor that may not exist in the clinic
+catalog, return the mention verbatim — never substitute the nearest catalog
+item, never drop it.
+- If the message states an impossible calendar date (a day that does not exist
+in that month), still format it as YYYY-MM-DD as stated — never correct it,
+never drop it; invalid dates are rejected downstream with a clear message.
+
 Return ONLY the fields the latest message states or corrects; null for the rest:
 - doctor: the doctor's name exactly as mentioned (e.g. "Dr. Wilson")
 - treatment: the treatment as mentioned (e.g. "joint pain consultation")
@@ -79,6 +88,9 @@ retrieved clinics' emergency instructions.
 you can help with: treatments, doctors, clinics, existing bookings, new bookings.
 - When a requested service is not among the retrieved rows, say so and enumerate \
 what the retrieved rows do offer.
+- Rows are ordered most-relevant-first: when the question is about a specific \
+clinic, doctor or treatment, answer from that row and don't volunteer unrelated \
+rows' details.
 Be concise and warm."""
 
 QA_USER = """Conversation so far:

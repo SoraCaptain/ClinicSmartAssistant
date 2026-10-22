@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agent.graph import build_clinic_graph
+from app.agent.nodes.booking_flow import _resolve_treatment
 from tests.conftest import TREATMENTS
 
 BOOK_INTENT = "book_appointment"
@@ -174,6 +175,45 @@ def test_multiword_mention_resolves_via_token_fallback(fake_chains, booking_fake
     assert "matching Orthopedics specialist" in result["reply"]
 
 
+def test_instructions_only_match_never_resolves(booking_fakes):
+    """Regression: resolution is identity-fields (treatment_name/category) only.
+    The backend search also matches pre_treatment_instructions, so a token of an
+    unknown mention (here hitting the '…blood tests are scheduled' row) used to
+    resolve it to that unrelated treatment — unknown mentions must stay
+    unresolved."""
+    booking_fakes(slots=[{}])
+
+    assert _resolve_treatment("blood test") is None
+
+
+def test_identity_field_mentions_still_resolve(booking_fakes):
+    """The identity rule keeps every legitimate mention resolving: a full name,
+    a category, and a multi-word name via token fallback."""
+    booking_fakes(slots=[{}])
+
+    assert _resolve_treatment("General Health Checkup")["treatment_id"] == "T001"
+    assert _resolve_treatment("preventative care")["treatment_id"] == "T001"
+    assert _resolve_treatment("joint pain consultation")["treatment_id"] == "T005"
+
+
+def test_unknown_mention_hitting_instructions_stays_unresolved(fake_chains, booking_fakes):
+    """End-to-end regression for the same class: the mention sets treatment_raw
+    and renders the complaint — no silent substitution, no doctor auto-match, no
+    booking summary riding on the wrongly grabbed row."""
+    fake_chains(BOOK_INTENT)
+    fakes = booking_fakes(slots=[{"treatment": "blood test"}])
+    graph = build_clinic_graph(InMemorySaver())
+
+    r = _invoke(graph, "book a blood test", uuid.uuid4().hex)
+
+    draft = r["booking_draft"]
+    assert draft["treatment_id"] is None and draft["treatment_name"] is None
+    assert draft.get("doctor_id") is None  # no auto-match off a substituted row
+    assert draft["treatment_raw"] == "blood test"
+    assert 'couldn\'t find a treatment matching "blood test"' in r["reply"]
+    assert fakes["create"].calls == []
+
+
 def test_failed_remention_clears_stale_display_fields(fake_chains, booking_fakes):
     """A resolved slot re-mentioned unresolvably drops the old row's name/price:
     prompts render those fields, so stale values would mislead the LLM."""
@@ -288,6 +328,25 @@ def test_unique_treatment_autofill_for_doctor_specialty(fake_chains, booking_fak
     assert fakes["create"].calls == []
 
 
+def test_unresolved_doctor_complaint_rides_with_next_question(fake_chains, booking_fakes):
+    """Complaints are never silently swallowed: an unresolved doctor mention
+    renders its complaint (with the doctor list) even though treatment is the
+    first missing slot — one reply carries both; nothing books."""
+    fake_chains(BOOK_INTENT)
+    fakes = booking_fakes(
+        slots=[{"doctor": "Dr. Nobody", "booking_date": "2026-11-21", "booking_time": "10:00"}]
+    )
+    graph = build_clinic_graph(InMemorySaver())
+
+    r = _invoke(graph, "book with Dr. Nobody on 2026-11-21 at 10am", uuid.uuid4().hex)
+
+    assert "couldn't find a doctor matching \"Dr. Nobody\"" in r["reply"]
+    assert "not available" in r["reply"]
+    assert "Available doctors:" in r["reply"] and "Dr. Sarah Jenkins" in r["reply"]
+    assert "Which treatment would you like to book?" in r["reply"]
+    assert fakes["create"].calls == []
+
+
 def test_unresolved_treatment_lists_available_treatments(fake_chains, booking_fakes):
     """An unresolvable treatment mention enumerates the catalog instead of asking
     an empty open-ended question."""
@@ -300,6 +359,23 @@ def test_unresolved_treatment_lists_available_treatments(fake_chains, booking_fa
     assert "couldn't find a treatment matching \"aromatherapy massage\"" in r["reply"]
     for row in TREATMENTS:
         assert row["treatment_name"] in r["reply"]
+
+
+def test_extraction_prompt_demands_verbatim_mentions_and_dates(fake_chains, booking_fakes):
+    """Live-extraction regressions: the model substituted catalog items for
+    unknown mentions and silently dropped impossible dates. The prompt now
+    demands both be returned as stated, leaving rejection to the flow."""
+    fake_chains(BOOK_INTENT)
+    fakes = booking_fakes(slots=[{"treatment": "joint pain consultation"}])
+    graph = build_clinic_graph(InMemorySaver())
+
+    _invoke(graph, "book a joint pain consultation", uuid.uuid4().hex)
+
+    prompt = fakes["slots"].prompts[0]
+    assert "return the mention verbatim" in prompt
+    assert "never substitute the nearest catalog" in prompt
+    assert "impossible calendar date" in prompt
+    assert "never correct it" in prompt
 
 
 def test_invalid_calendar_date_is_rejected_then_reasked(fake_chains, booking_fakes):

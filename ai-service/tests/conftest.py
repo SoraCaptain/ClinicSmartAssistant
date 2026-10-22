@@ -25,7 +25,7 @@ DOCTORS = [
     {"doctor_id": "D104", "clinic_id": "C001", "full_name": "Dr. James Wilson", "specialty": "Orthopedics", "languages_spoken": "English", "consultation_fee_usd": "250.00", "bio": "Orthopedic specialist focusing on joint pain and sports injuries."},
 ]
 TREATMENTS = [
-    {"treatment_id": "T001", "treatment_name": "General Health Checkup", "category": "Preventative Care", "duration_minutes": 30, "price_usd": "150.00", "pre_treatment_instructions": "Fast for at least 8 hours prior to your visit."},
+    {"treatment_id": "T001", "treatment_name": "General Health Checkup", "category": "Preventative Care", "duration_minutes": 30, "price_usd": "150.00", "pre_treatment_instructions": "Fast for at least 8 hours prior to your visit if blood tests are scheduled."},
     {"treatment_id": "T002", "treatment_name": "Pediatric Vaccination", "category": "Pediatrics", "duration_minutes": 15, "price_usd": "80.00", "pre_treatment_instructions": "Please bring the child's official vaccination record booklet."},
     {"treatment_id": "T003", "treatment_name": "Dermatology Consultation", "category": "Dermatology", "duration_minutes": 30, "price_usd": "200.00", "pre_treatment_instructions": "Ensure skin is clean and free of makeup or heavy lotions on the area being evaluated."},
     {"treatment_id": "T004", "treatment_name": "Flu Shot Injection", "category": "Immunization", "duration_minutes": 15, "price_usd": "40.00", "pre_treatment_instructions": "No prior preparation required. Inform doctor if you currently have a fever."},
@@ -131,8 +131,8 @@ class FakeTool:
 def catalog_fakes(monkeypatch):
     """install(...) → patches the catalog/patient/booking tool symbols at their
     consumer modules (qa, bookings_query, runtime) with seed-shaped data. Mirrors
-    the backend's contains-match (treatments: name/category; doctors: specialty
-    + name/languages/bio via search; clinics: id + name/address/hours/policies
+    the backend's contains-match (treatments: name/category/instructions; doctors:
+    specialty + name/languages/bio via search; clinics: id + name/address/hours/policies
     via search). Returns the FakeTool handles for call assertions."""
 
     def install(
@@ -172,7 +172,9 @@ def catalog_fakes(monkeypatch):
             return [
                 t
                 for t in treatments
-                if needle in t["treatment_name"].casefold() or needle in t["category"].casefold()
+                if needle in t["treatment_name"].casefold()
+                or needle in t["category"].casefold()
+                or needle in t["pre_treatment_instructions"].casefold()
             ]
 
         def fake_get_clinics(clinic_id: str | None = None, search: str | None = None) -> list[dict]:
@@ -276,14 +278,18 @@ def booking_fakes(monkeypatch):
             return list(rows)
 
         def fake_search_treatments(search: str | None = None) -> list[dict]:
-            # mirrors the backend's case-insensitive contains-match on name/category
+            # mirrors the backend's case-insensitive contains-match on
+            # name/category/instructions (resolution post-filters these to
+            # identity fields — see _identity_rows in booking_flow)
             if search is None:
                 return list(TREATMENTS)
             needle = search.casefold()
             return [
                 t
                 for t in TREATMENTS
-                if needle in t["treatment_name"].casefold() or needle in t["category"].casefold()
+                if needle in t["treatment_name"].casefold()
+                or needle in t["category"].casefold()
+                or needle in t["pre_treatment_instructions"].casefold()
             ]
 
         monkeypatch.setattr(

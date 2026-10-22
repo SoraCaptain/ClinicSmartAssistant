@@ -1,7 +1,8 @@
-"""QA node (DESIGN §5.3): retrieval over the tiny catalog is deterministic —
-full-string contains-match first, token fallback second ('knee pain' → token
-'pain' → T005; embeddings are the §5.3 upgrade path). Retrieved rows plus patient
-context (P8) ground a cited LLM answer; tool failures surface as readable text."""
+"""QA node (DESIGN §5.3): retrieval over the tiny catalog is deterministic — full-string
+contains-match first, token fallback second ('knee pain' → token 'pain' → T005; embeddings
+are the §5.3 upgrade path), and the full roster always grounds the prompt with the
+message-matched rows ordered first. Retrieved rows plus patient context (P8) ground a
+cited LLM answer; tool failures surface as readable text."""
 
 import re
 
@@ -44,14 +45,24 @@ def _match_all(search, query: str, id_key: str) -> list[dict]:
     return matched
 
 
+def _roster_after(matched: list[dict], roster: list[dict], id_key: str) -> list[dict]:
+    """Matched rows first, then every remaining roster row (dedup by id): the
+    11-row corpus is grounded whole each turn, and matching only decides the
+    order — a partial match can never hide the row that answers the question."""
+    by_id = {row[id_key]: row for row in matched}
+    for row in roster:
+        by_id.setdefault(row[id_key], row)
+    return list(by_id.values())
+
+
 def retrieve_catalog(message: str) -> dict:
-    """Treatments matched on the message; doctors matched by generic search
+    """Message-matched rows ordered first; doctors matched by generic search
     (name/specialty/languages/bio) directly or via a matched treatment's category
     (T001 'Preventative Care' → D101 via bio); clinics matched directly on the
-    message, unioned with the sites the retrieved doctors practice at (dedup by
-    clinic_id). When nothing matches at all, the full catalog is returned so the
-    LLM can enumerate it and honestly deny absent services — a designed retrieval
-    strategy for an 11-row corpus, not an error path."""
+    message, unioned with the sites the matched doctors practice at (dedup by
+    clinic_id). The full roster ALWAYS rides along after the matches: subsets
+    matched on message words kept missing the row a comparison or enumeration
+    question needed, and an 11-row corpus is cheap to ground whole."""
     treatments = _match_all(search_treatments, message, "treatment_id")
     doctors = _match_all(lambda q: search_doctors(search=q), message, "doctor_id")
     clinics = _match_all(lambda q: get_clinics(search=q), message, "clinic_id")
@@ -68,11 +79,11 @@ def retrieve_catalog(message: str) -> dict:
             if clinic["clinic_id"] in clinic_ids:
                 by_id.setdefault(clinic["clinic_id"], clinic)
         clinics = list(by_id.values())
-    if not (treatments or doctors or clinics):
-        treatments = search_treatments()
-        doctors = search_doctors()
-        clinics = get_clinics()
-    return {"treatments": treatments, "doctors": doctors, "clinics": clinics}
+    return {
+        "treatments": _roster_after(treatments, search_treatments(), "treatment_id"),
+        "doctors": _roster_after(doctors, search_doctors(), "doctor_id"),
+        "clinics": _roster_after(clinics, get_clinics(), "clinic_id"),
+    }
 
 
 def qa_answer(state: ClinicGraphState) -> dict:

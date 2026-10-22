@@ -59,10 +59,10 @@ def test_specialty_question_grounds_doctor_directly(fake_chains):
     assert result["reply"] == "Dr. Elena Rostova (D103) covers dermatology."
 
 
-def test_no_catalog_match_returns_full_catalog_for_honest_denial(fake_chains):
-    """Empty retrieval is a designed strategy, not an error: nothing matched → the
-    whole corpus is returned so the LLM can enumerate offerings and deny the
-    absent service honestly."""
+def test_no_match_still_grounds_full_roster(fake_chains):
+    """Full-roster-always (not an empty-fallback): nothing matched → the whole
+corpus grounds the prompt in roster order, so the LLM can enumerate offerings
+and deny the absent service honestly."""
     fakes = fake_chains("qa", qa_reply="I don't have that treatment in the catalog.")
     graph = build_clinic_graph(InMemorySaver())
 
@@ -89,13 +89,15 @@ def test_catalog_unreachable_is_readable_without_llm(fake_chains, catalog_fakes)
 
 def test_retrieve_matches_clinic_directly_by_name_token(catalog_fakes):
     """Clinics are matched on the message itself (not only derived from doctors):
-    token 'sunset' hits Sunset Wellness Center directly."""
+    token 'sunset' hits Sunset Wellness Center directly — ordered first, with the
+    rest of the roster still grounded."""
     catalog_fakes()
 
     result = retrieve_catalog("how do I get to Sunset Wellness?")
 
-    assert [c["clinic_id"] for c in result["clinics"]] == ["C002"]
-    assert result["treatments"] == [] and result["doctors"] == []
+    assert [c["clinic_id"] for c in result["clinics"]] == ["C002", "C001"]
+    assert [t["treatment_id"] for t in result["treatments"]] == [t["treatment_id"] for t in TREATMENTS]
+    assert [d["doctor_id"] for d in result["doctors"]] == [d["doctor_id"] for d in DOCTORS]
 
 
 def test_retrieve_matches_doctor_via_language(catalog_fakes):
@@ -104,8 +106,8 @@ def test_retrieve_matches_doctor_via_language(catalog_fakes):
 
     result = retrieve_catalog("is there a doctor who speaks Spanish?")
 
-    assert [d["doctor_id"] for d in result["doctors"]] == ["D101"]
-    assert [c["clinic_id"] for c in result["clinics"]] == ["C001"]  # derived from D101
+    assert [d["doctor_id"] for d in result["doctors"]] == ["D101", "D102", "D103", "D104"]  # D101 leads
+    assert [c["clinic_id"] for c in result["clinics"]] == ["C001", "C002"]  # C001 derived from D101
 
 
 def test_retrieve_matches_doctor_via_bio(catalog_fakes):
@@ -114,7 +116,8 @@ def test_retrieve_matches_doctor_via_bio(catalog_fakes):
 
     result = retrieve_catalog("who treats sports injuries?")
 
-    assert [d["doctor_id"] for d in result["doctors"]] == ["D104"]
+    assert result["doctors"][0]["doctor_id"] == "D104"
+    assert [d["doctor_id"] for d in result["doctors"]] == ["D104", "D101", "D102", "D103"]
 
 
 def test_treatment_category_bridges_to_doctor_via_bio(catalog_fakes):
@@ -124,9 +127,25 @@ def test_treatment_category_bridges_to_doctor_via_bio(catalog_fakes):
 
     result = retrieve_catalog("just a routine checkup please")
 
-    assert [t["treatment_id"] for t in result["treatments"]] == ["T001"]
-    assert [d["doctor_id"] for d in result["doctors"]] == ["D101"]  # bridge-only: no direct match
-    assert [c["clinic_id"] for c in result["clinics"]] == ["C001"]
+    assert result["treatments"][0]["treatment_id"] == "T001"
+    assert [t["treatment_id"] for t in result["treatments"]] == [t["treatment_id"] for t in TREATMENTS]
+    assert result["doctors"][0]["doctor_id"] == "D101"  # bridge-only: no direct match
+    assert result["clinics"][0]["clinic_id"] == "C001"
+
+
+def test_partial_match_still_grounds_every_roster_row(catalog_fakes):
+    """A subset match must not hide unmatched rows: comparison and enumeration
+    questions need rows the message words never matched, so every roster row
+    rides along with the matches leading the order."""
+    catalog_fakes()
+
+    result = retrieve_catalog("who should I see about my knee pain?")
+
+    assert result["treatments"][0]["treatment_id"] == "T005"  # the match leads
+    assert result["doctors"][0]["doctor_id"] == "D104"
+    assert [t["treatment_id"] for t in result["treatments"]] == ["T005", "T001", "T002", "T003", "T004"]
+    assert [d["doctor_id"] for d in result["doctors"]] == ["D104", "D101", "D102", "D103"]
+    assert [c["clinic_id"] for c in result["clinics"]] == ["C001", "C002"]
 
 
 def test_render_catalog_carries_cancellation_and_emergency():

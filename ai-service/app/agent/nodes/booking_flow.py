@@ -67,17 +67,33 @@ def _match_doctor(raw: str, doctors: list[dict]) -> dict | None:
     return None
 
 
+def _identity_rows(rows: list[dict], needle: str) -> list[dict]:
+    """Rows whose identity fields (treatment_name, category) case-insensitively
+    contain the needle. The backend search also matches pre_treatment_instructions
+    — that is QA-retrieval aid, not entity identity: without this filter an unknown
+    mention's token silently substitutes whichever treatment its words happen to
+    hit in the instructions."""
+    folded = needle.casefold()
+    return [
+        row
+        for row in rows
+        if folded in row["treatment_name"].casefold() or folded in row["category"].casefold()
+    ]
+
+
 def _resolve_treatment(raw: str) -> dict | None:
-    """Contains-match on the full mention, falling back to its significant tokens
-    in order of appearance ('joint pain consultation' → 'joint') so multi-word
-    mentions survive the backend's substring search over names like
-    'Joint & Pain Consultation'."""
-    rows = search_treatments(raw)
+    """Identity-fields-only resolution: a row is accepted only when the mention
+    (full string first, then its significant tokens in order of appearance —
+    'joint pain consultation' → 'joint') contains-matches its treatment_name or
+    category, so multi-word mentions survive the backend's substring search over
+    names like 'Joint & Pain Consultation' while unknown mentions stay
+    unresolved instead of grabbing an instructions-only match."""
+    rows = _identity_rows(search_treatments(raw), raw)
     if rows:
         return rows[0]
     tokens = (t for t in re.split(r"\W+", raw.lower()) if len(t) >= 4)
     for token in tokens:
-        rows = search_treatments(token)
+        rows = _identity_rows(search_treatments(token), token)
         if rows:
             return rows[0]
     return None
@@ -174,6 +190,7 @@ def extract_slots(state: ClinicGraphState) -> dict:
                 doctor_specialty=None,
                 doctor_raw=extracted.doctor,
             )
+            draft["doctor_options"] = search_doctors()  # ask_missing enumerates these
     if extracted.booking_date:
         issue = _date_issue(extracted.booking_date)
         if issue:
@@ -218,33 +235,53 @@ def extract_slots(state: ClinicGraphState) -> dict:
     return {"booking_draft": draft}
 
 
+def _doctor_listing(options: list[dict]) -> str:
+    return "\n".join(
+        f"- {o['full_name']} ({o['specialty']}, ${o['consultation_fee_usd']})" for o in options
+    )
+
+
+def _raw_mention_complaints(draft: dict) -> list[str]:
+    """Every unresolved raw mention renders a complaint — even when its slot is
+    not the first missing one: an unsurfaced complaint is dropped for good at the
+    next extract turn, so swallowing it here would lose it silently."""
+    complaints = []
+    if draft.get("treatment_raw"):
+        complaint = (
+            f'I couldn\'t find a treatment matching "{draft["treatment_raw"]}" — '
+            "it is not offered at this clinic."
+        )
+        names = ", ".join(t["treatment_name"] for t in draft.get("treatment_options") or [])
+        if names:
+            complaint += f" Available treatments: {names}."
+        complaints.append(complaint)
+    if draft.get("doctor_raw"):
+        complaint = (
+            f'I couldn\'t find a doctor matching "{draft["doctor_raw"]}" — '
+            "that doctor is not available at this clinic."
+        )
+        options = draft.get("doctor_options") or []
+        if options:
+            complaint += f" Available doctors:\n{_doctor_listing(options)}"
+        complaints.append(complaint)
+    return complaints
+
+
 def ask_missing(state: ClinicGraphState) -> dict:
-    """Pure rendering of the first missing slot — no tool calls."""
+    """Pure rendering of the first missing slot — no tool calls. Unresolved raw
+    mentions complain up front whatever the first missing slot is (each complaint
+    carries the options enumeration already in the draft)."""
     draft = state.get("booking_draft") or {}
     first = missing_slots(draft)[0]
     if first == "treatment":
-        if draft.get("treatment_raw"):
-            reply = f'I couldn\'t find a treatment matching "{draft["treatment_raw"]}".'
-            names = ", ".join(t["treatment_name"] for t in draft.get("treatment_options") or [])
-            if names:
-                reply += f" Available treatments: {names}."
-            reply += " Which treatment would you like?"
-        else:
-            reply = "Which treatment would you like to book?"
+        reply = "Which treatment would you like to book?"
     elif first == "doctor":
         options = draft.get("doctor_options") or []
-        listing = "\n".join(
-            f"- {o['full_name']} ({o['specialty']}, ${o['consultation_fee_usd']})" for o in options
-        )
         if draft.get("doctor_raw"):
-            reply = f"I couldn't find a doctor matching \"{draft['doctor_raw']}\"."
-            if options:
-                reply += f" Available doctors:\n{listing}\nWhich one would you like?"
-            else:
-                reply += " Which doctor would you like?"
+            reply = "Which one would you like?"  # the complaint above already enumerated
         elif options:
             reply = (
-                f"For {draft['treatment_name']}, I'd recommend:\n{listing}\n"
+                f"For {draft['treatment_name']}, I'd recommend:\n{_doctor_listing(options)}\n"
                 "Which doctor would you like?"
             )
         else:
@@ -262,7 +299,7 @@ def ask_missing(state: ClinicGraphState) -> dict:
         notes.append(f"{draft['doctor_name']} is the matching {draft['doctor_specialty']} specialist.")
     if draft.get("treatment_auto"):
         notes.append(f"The matching {draft['doctor_specialty']} service is {draft['treatment_name']}.")
-    return {"reply": " ".join([*notes, reply])}
+    return {"reply": "\n".join([*notes, *_raw_mention_complaints(draft), reply])}
 
 
 def confirm_summary(state: ClinicGraphState) -> dict:
