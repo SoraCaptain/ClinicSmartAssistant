@@ -1,6 +1,11 @@
-"""Booking REST tools. get_my_bookings lands with its consumer (slice 4)."""
+"""Booking REST tools."""
 
-from app.agent.tools.client import _post
+from app.agent.tools.client import _get, _post
+
+
+def get_my_bookings(patient_id: str) -> list[dict]:
+    """GET /api/bookings?patient_id= → the patient's joined booking rows (P5 read model)."""
+    return _get("/api/bookings", params={"patient_id": patient_id})
 
 
 def create_booking(

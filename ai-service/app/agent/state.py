@@ -11,12 +11,12 @@ from langgraph.graph.message import add_messages
 class ClinicGraphState(TypedDict, total=False):
     session_id: str
     patient_id: str
-    patient_context: dict  # profile, allergies, history (tool-fetched, slice 4 / P8)
+    patient_context: dict  # profile, allergies, history (runtime-fetched per turn, P8)
     messages: Annotated[list, add_messages]
     user_message: str
     intent: str  # qa | check_bookings | book_appointment | general
     user_confirms: bool | None  # classifier's confirmation verdict while a draft awaits
-    retrieved: list  # rows pulled by catalog tools (slice 4)
-    booking_draft: dict  # slot-filling state (slice 3)
-    booking_created: dict | None  # persisted booking (slice 3)
+    retrieved: list  # rows pulled by catalog tools for the answer
+    booking_draft: dict  # slot-filling state
+    booking_created: dict | None  # persisted booking returned by create_booking
     reply: str  # final assistant text for this turn

@@ -6,8 +6,9 @@ import pytest
 import json
 
 from app.agent.tools import client as client_mod
-from app.agent.tools.booking_tools import create_booking
-from app.agent.tools.catalog_tools import search_doctors, search_treatments
+from app.agent.tools.booking_tools import create_booking, get_my_bookings
+from app.agent.tools.catalog_tools import get_clinics, search_doctors, search_treatments
+from app.agent.tools.patient_tools import get_patient_context
 
 
 @pytest.fixture()
@@ -73,3 +74,40 @@ def test_catalog_tools_pass_query_params(mock_transport):
         ("/api/treatments", {"search": "joint pain"}),
         ("/api/doctors", {}),
     ]
+
+
+def test_get_clinics_passes_clinic_id(mock_transport):
+    captured = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.url.path, dict(request.url.params)))
+        return httpx.Response(200, json=[])
+
+    mock_transport(handler)
+    assert get_clinics() == []
+    assert get_clinics(clinic_id="C001") == []
+    assert captured == [("/api/clinics", {}), ("/api/clinics", {"clinic_id": "C001"})]
+
+
+def test_get_my_bookings_queries_patient_id(mock_transport):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json=[{"booking_id": "B1004"}])
+
+    mock_transport(handler)
+    assert get_my_bookings("P001") == [{"booking_id": "B1004"}]
+    assert captured["url"] == "http://localhost:8000/api/bookings?patient_id=P001"
+
+
+def test_get_patient_context_hits_context_endpoint(mock_transport):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"profile": {"patient_id": "P001"}})
+
+    mock_transport(handler)
+    assert get_patient_context("P001") == {"profile": {"patient_id": "P001"}}
+    assert captured["url"] == "http://localhost:8000/api/patients/P001/context"

@@ -1,6 +1,7 @@
 """Routing contract (slice 2): each single-node intent reaches its own node, and
 conversation history persists across turns on the same thread (P1 context). The
-booking fan-out is covered in test_booking_flow.py."""
+booking fan-out is covered in test_booking_flow.py; qa/bookings node behavior in
+test_qa_bookings.py."""
 
 import uuid
 
@@ -8,26 +9,33 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agent.graph import build_clinic_graph
-from app.agent.nodes import bookings_query as bookings_query_mod
-from app.agent.nodes import qa as qa_mod
 
-INTENT_EXPECTED_REPLY = {
-    "qa": qa_mod.REPLY,
-    "check_bookings": bookings_query_mod.REPLY,
+INTENT_FAKE_REPLY = {
+    "qa": "Cited answer (T005) (D104).",
+    "check_bookings": "Your next appointment is (B1004).",
     "general": "Hi there!",
 }
 
 
 def _invoke(graph, message: str, thread_id: str) -> dict:
     return graph.invoke(
-        {"user_message": message, "messages": [{"role": "user", "content": message}]},
+        {
+            "patient_id": "P001",
+            "user_message": message,
+            "messages": [{"role": "user", "content": message}],
+        },
         {"configurable": {"thread_id": thread_id}},
     )
 
 
-@pytest.mark.parametrize("intent,expected_reply", INTENT_EXPECTED_REPLY.items())
+@pytest.mark.parametrize("intent,expected_reply", INTENT_FAKE_REPLY.items())
 def test_routes_each_intent_to_its_node(fake_chains, intent, expected_reply):
-    fake_chains(intent, general_reply="Hi there!")
+    fake_chains(
+        intent,
+        general_reply=INTENT_FAKE_REPLY["general"],
+        qa_reply=INTENT_FAKE_REPLY["qa"],
+        bookings_reply=INTENT_FAKE_REPLY["check_bookings"],
+    )
     graph = build_clinic_graph(InMemorySaver())
 
     result = _invoke(graph, "hello", uuid.uuid4().hex)

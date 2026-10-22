@@ -59,8 +59,44 @@ def test_chat_rejects_empty_message():
     assert resp.status_code == 422
 
 
-def test_chat_without_api_key_fails_fast(monkeypatch):
-    """No key + real (unpatched) chains → loud RuntimeError, never a canned reply."""
+def test_chat_fetches_patient_context_per_turn_and_injects_it(fake_chains):
+    """P8: every /chat fetches context for the resolved patient (default P001) and
+    the qa prompt carries it (allergies)."""
+    fakes = fake_chains("qa", qa_reply="Cited (T005).")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chat", json={"session_id": uuid.uuid4().hex, "message": "knee pain advice"}
+        )
+
+    assert resp.status_code == 200
+    assert fakes["context"].calls == [{"patient_id": "P001"}]
+    assert "Penicillin, Peanuts" in fakes["qa"].prompts[-1]
+
+
+def test_chat_explicit_patient_id_drives_context_fetch(fake_chains):
+    fakes = fake_chains("qa", qa_reply="ok")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chat",
+            json={"session_id": uuid.uuid4().hex, "message": "hello there", "patient_id": "P002"},
+        )
+    assert resp.status_code == 200
+    assert fakes["context"].calls == [{"patient_id": "P002"}]
+
+
+def test_chat_context_fetch_failure_fails_loud(fake_chains, catalog_fakes):
+    """A failing context fetch breaks the turn loudly (honest P8 path) — never a
+    canned reply or a context-less answer."""
+    fake_chains("general", general_reply="Hi!")
+    catalog_fakes(context_error=RuntimeError("backend unreachable at http://localhost:8000: refused"))
+    with TestClient(app) as client, pytest.raises(RuntimeError, match="backend unreachable"):
+        client.post("/chat", json={"session_id": uuid.uuid4().hex, "message": "hi"})
+
+
+def test_chat_without_api_key_fails_fast(monkeypatch, catalog_fakes):
+    """No key + real (unpatched) chains → loud RuntimeError, never a canned reply.
+    The P8 context fetch is faked so the key check is what fires."""
     monkeypatch.setattr("app.core.config.settings.openai_api_key", "")
+    catalog_fakes()
     with TestClient(app) as client, pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         client.post("/chat", json={"session_id": uuid.uuid4().hex, "message": "hi"})

@@ -1,6 +1,8 @@
 """Shared fakes: scripted chains patched at their consumer modules (LedgerMind lesson —
-patching the underlying LLM factory leaves stale chains). Booking fakes patch the
-tool symbols at the booking_flow module for the same reason."""
+patching the underlying LLM factory leaves stale chains). fake_chains makes EVERY node
+network-safe (any scripted intent can route anywhere); catalog_fakes overrides the
+default catalog/patient/booking tool data — call it AFTER fake_chains so its patches
+win. Booking fakes patch the tool symbols at the booking_flow module for the same reason."""
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -8,17 +10,48 @@ from langchain_core.messages import AIMessage
 from app.agent.nodes.booking_flow import ExtractedSlots
 from app.agent.nodes.classifier import ClassifierOutput
 
-# Canned catalog mirroring the seed rows (fields the booking flow reads)
+# Canned catalog mirroring the seed rows (fields the nodes read)
 DOCTORS = [
-    {"doctor_id": "D101", "clinic_id": "C001", "full_name": "Dr. Sarah Jenkins", "specialty": "General Practice", "consultation_fee_usd": "150.00"},
-    {"doctor_id": "D102", "clinic_id": "C001", "full_name": "Dr. Michael Chang", "specialty": "Pediatrics", "consultation_fee_usd": "180.00"},
-    {"doctor_id": "D103", "clinic_id": "C002", "full_name": "Dr. Elena Rostova", "specialty": "Dermatology", "consultation_fee_usd": "220.00"},
-    {"doctor_id": "D104", "clinic_id": "C001", "full_name": "Dr. James Wilson", "specialty": "Orthopedics", "consultation_fee_usd": "250.00"},
+    {"doctor_id": "D101", "clinic_id": "C001", "full_name": "Dr. Sarah Jenkins", "specialty": "General Practice", "languages_spoken": "English, Spanish", "consultation_fee_usd": "150.00", "bio": "Board-certified family physician."},
+    {"doctor_id": "D102", "clinic_id": "C001", "full_name": "Dr. Michael Chang", "specialty": "Pediatrics", "languages_spoken": "English, Mandarin", "consultation_fee_usd": "180.00", "bio": "Pediatric specialist."},
+    {"doctor_id": "D103", "clinic_id": "C002", "full_name": "Dr. Elena Rostova", "specialty": "Dermatology", "languages_spoken": "English, Russian", "consultation_fee_usd": "220.00", "bio": "Dermatologist specializing in eczema and acne treatments."},
+    {"doctor_id": "D104", "clinic_id": "C001", "full_name": "Dr. James Wilson", "specialty": "Orthopedics", "languages_spoken": "English", "consultation_fee_usd": "250.00", "bio": "Orthopedic specialist focusing on joint pain and sports injuries."},
 ]
 TREATMENTS = [
-    {"treatment_id": "T001", "treatment_name": "General Health Checkup", "category": "Preventative Care", "duration_minutes": 30, "price_usd": "150.00"},
-    {"treatment_id": "T005", "treatment_name": "Joint & Pain Consultation", "category": "Orthopedics", "duration_minutes": 45, "price_usd": "230.00"},
+    {"treatment_id": "T001", "treatment_name": "General Health Checkup", "category": "Preventative Care", "duration_minutes": 30, "price_usd": "150.00", "pre_treatment_instructions": "Fast for at least 8 hours prior to your visit."},
+    {"treatment_id": "T005", "treatment_name": "Joint & Pain Consultation", "category": "Orthopedics", "duration_minutes": 45, "price_usd": "230.00", "pre_treatment_instructions": "Wear loose-fitting clothing."},
 ]
+CLINICS = [
+    {"clinic_id": "C001", "clinic_name": "Metro Care Health Clinic", "address": "123 Medical Center Way, New York", "phone": "+1-555-019-2831", "operating_hours": "Mon-Fri: 8:00 AM - 6:00 PM", "cancellation_policy": "24 hours", "emergency_instructions": "Dial 911."},
+    {"clinic_id": "C002", "clinic_name": "Sunset Wellness Center", "address": "456 Ocean Ave, Santa Monica", "phone": "+1-555-014-9922", "operating_hours": "Mon-Fri: 9:00 AM - 5:00 PM", "cancellation_policy": "12 hours", "emergency_instructions": "Call the hotline."},
+]
+# Joined booking rows (BookingJoined shape) mirroring the seed: P001 owns both
+BOOKINGS = [
+    {"booking_id": "B1001", "patient_id": "P001", "doctor_id": "D101", "treatment_id": "T001",
+     "booking_date": "2026-11-05", "booking_time": "09:00:00", "status": "Confirmed",
+     "notes": "Routine annual checkup.", "created_at": "2026-10-01T10:00:00", "source": "seed",
+     "doctor_name": "Dr. Sarah Jenkins", "doctor_specialty": "General Practice",
+     "treatment_name": "General Health Checkup", "clinic_id": "C001", "clinic_name": "Metro Care Health Clinic"},
+    {"booking_id": "B1004", "patient_id": "P001", "doctor_id": "D104", "treatment_id": "T005",
+     "booking_date": "2026-11-15", "booking_time": "11:00:00", "status": "Confirmed",
+     "notes": "Follow up on knee pain.", "created_at": "2026-10-01T10:00:00", "source": "seed",
+     "doctor_name": "Dr. James Wilson", "doctor_specialty": "Orthopedics",
+     "treatment_name": "Joint & Pain Consultation", "clinic_id": "C001", "clinic_name": "Metro Care Health Clinic"},
+]
+# PatientContextOut shape for P001 (the P8 payload)
+PATIENT_CONTEXT = {
+    "profile": {
+        "patient_id": "P001", "first_name": "John", "last_name": "Doe", "dob": "1988-05-14",
+        "gender": "Male", "phone": "+1-555-018-3311", "email": "john.doe@example.com",
+        "known_allergies": "Penicillin, Peanuts", "emergency_contact": "Jane Doe (Spouse) - +1-555-018-3312",
+    },
+    "treatment_history": [
+        {"record_id": "H9002", "patient_id": "P001", "doctor_id": "D101", "visit_date": "2026-04-12",
+         "chief_complaint": "Annual routine health checkup.", "diagnosis": "Healthy / Normal Range",
+         "prescribed_medication": "Multivitamins", "doctor_notes": "Blood pressure normal."},
+    ],
+    "upcoming_bookings": BOOKINGS,
+}
 
 
 def _normalize_script(script) -> list[tuple[str, bool | None]]:
@@ -42,11 +75,15 @@ class FakeClassifierChain:
         return ClassifierOutput(intent=intent, user_confirms=user_confirms)
 
 
-class FakeGeneralChain:
+class FakeChatChain:
+    """Scripted plain-chat chain; records every prompt it sees."""
+
     def __init__(self, reply: str):
         self.reply = reply
+        self.prompts: list[str] = []
 
     def invoke(self, prompt: str, config=None) -> AIMessage:
+        self.prompts.append(prompt)
         return AIMessage(content=self.reply)
 
 
@@ -81,19 +118,93 @@ class FakeTool:
 
 
 @pytest.fixture()
-def fake_chains(monkeypatch):
-    """install(script, general_reply=...) → patches classifier + general chains,
-    returns the installed fakes (classifier records every prompt it sees). The
-    script is an intent, a list of intents, or (intent, user_confirms) tuples."""
+def catalog_fakes(monkeypatch):
+    """install(...) → patches the catalog/patient/booking tool symbols at their
+    consumer modules (qa, bookings_query, runtime) with seed-shaped data. Mirrors
+    the backend's contains-match (treatments: name/category; doctors: specialty).
+    Returns the FakeTool handles for call assertions."""
 
-    def install(script, general_reply: str = "General reply."):
+    def install(
+        treatments: list = TREATMENTS,
+        doctors: list = DOCTORS,
+        clinics: list = CLINICS,
+        patient_context: dict | None = PATIENT_CONTEXT,
+        bookings: list = BOOKINGS,
+        catalog_error: Exception | None = None,
+        bookings_error: Exception | None = None,
+        context_error: Exception | None = None,
+    ):
+        def fake_search_doctors(specialty: str | None = None) -> list[dict]:
+            if catalog_error:
+                raise catalog_error
+            if specialty:
+                needle = specialty.casefold()
+                return [d for d in doctors if needle in d["specialty"].casefold()]
+            return list(doctors)
+
+        def fake_search_treatments(search: str | None = None) -> list[dict]:
+            if catalog_error:
+                raise catalog_error
+            if search is None:
+                return list(treatments)
+            needle = search.casefold()
+            return [
+                t
+                for t in treatments
+                if needle in t["treatment_name"].casefold() or needle in t["category"].casefold()
+            ]
+
+        def fake_get_clinics(clinic_id: str | None = None) -> list[dict]:
+            if catalog_error:
+                raise catalog_error
+            if clinic_id:
+                return [c for c in clinics if c["clinic_id"] == clinic_id]
+            return list(clinics)
+
+        context_tool = FakeTool(result=patient_context, error=context_error)
+        bookings_tool = FakeTool(result=bookings, error=bookings_error)
+        monkeypatch.setattr("app.agent.nodes.qa.search_doctors", fake_search_doctors)
+        monkeypatch.setattr("app.agent.nodes.qa.search_treatments", fake_search_treatments)
+        monkeypatch.setattr("app.agent.nodes.qa.get_clinics", fake_get_clinics)
+        monkeypatch.setattr("app.agent.nodes.bookings_query.get_my_bookings", bookings_tool)
+        monkeypatch.setattr("app.runtime.get_patient_context", context_tool)
+        return {"context": context_tool, "bookings_tool": bookings_tool}
+
+    return install
+
+
+@pytest.fixture()
+def fake_chains(monkeypatch, catalog_fakes):
+    """install(script, general_reply=..., qa_reply=..., bookings_reply=...) → patches
+    all four node chains AND default tool data (every scripted intent is network-safe),
+    returns the installed fakes (chains record prompts; tool handles under
+    context/bookings_tool). The script is an intent, a list of intents, or
+    (intent, user_confirms) tuples. Override tools by calling catalog_fakes afterwards."""
+
+    def install(
+        script,
+        general_reply: str = "General reply.",
+        qa_reply: str = "QA reply.",
+        bookings_reply: str = "Bookings reply.",
+    ):
         classifier = FakeClassifierChain(script)
-        general = FakeGeneralChain(general_reply)
+        chains = {
+            "classifier": classifier,
+            "general": FakeChatChain(general_reply),
+            "qa": FakeChatChain(qa_reply),
+            "bookings": FakeChatChain(bookings_reply),
+        }
         monkeypatch.setattr(
             "app.agent.nodes.classifier.get_classifier_chain", lambda: classifier
         )
-        monkeypatch.setattr("app.agent.nodes.general.get_general_chain", lambda: general)
-        return {"classifier": classifier, "general": general}
+        monkeypatch.setattr(
+            "app.agent.nodes.general.get_general_chain", lambda: chains["general"]
+        )
+        monkeypatch.setattr("app.agent.nodes.qa.get_qa_chain", lambda: chains["qa"])
+        monkeypatch.setattr(
+            "app.agent.nodes.bookings_query.get_bookings_chain", lambda: chains["bookings"]
+        )
+        return {**chains, **catalog_fakes()}
 
     return install
 

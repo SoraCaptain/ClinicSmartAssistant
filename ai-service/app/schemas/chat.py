@@ -12,5 +12,5 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     intent: str
-    booking_created: dict | None = None  # booking payload, populated by slice 3
+    booking_created: dict | None = None  # booking payload when a turn completes one
     session_id: str
