@@ -1,8 +1,9 @@
 # ClinicPilot AI — frontend
 
 Next.js 14 (App Router) + Tailwind. Single page with three panes: patient card,
-chat, bookings. No polling — the bookings table auto-refreshes when the chat
-completes a booking (`booking_created` in the `/api/chat` response).
+chat, and a tabbed right pane (bookings / bonus transcript summarizer). No
+polling — the bookings table auto-refreshes when the chat completes a booking
+(`booking_created` in the `/api/chat` response).
 
 ## Run
 

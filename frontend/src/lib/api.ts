@@ -1,6 +1,7 @@
-// Typed client for the backend API (DESIGN §6). Split-origin dev hits
-// localhost:8000; compose/k8s set NEXT_PUBLIC_API_URL="" for same-origin /api.
-import type { BookingJoined, ChatResponse, PatientContext } from "./types";
+// Typed client for the backend API (DESIGN §6). Split-origin dev falls back to
+// localhost:8000; the k8s image build inlines the ingress origin via
+// NEXT_PUBLIC_API_URL (it is a build-time constant in the client bundle).
+import type { BookingJoined, ChatResponse, PatientContext, SummaryResult } from "./types";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -38,4 +39,12 @@ export function getBookings(patientId: string = PATIENT_ID): Promise<BookingJoin
 
 export function getPatientContext(patientId: string = PATIENT_ID): Promise<PatientContext> {
   return request<PatientContext>(`/api/patients/${encodeURIComponent(patientId)}/context`);
+}
+
+export function postSummarize(transcript: string): Promise<SummaryResult> {
+  return request<SummaryResult>("/api/summarize/transcript", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ transcript }),
+  });
 }

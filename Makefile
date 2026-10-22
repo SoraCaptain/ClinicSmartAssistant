@@ -2,7 +2,11 @@
 
 DATABASE_URL ?= sqlite:////tmp/clinicpilot.db
 
-.PHONY: dev-backend dev-ai dev-frontend test compose-up compose-down
+# k8s image builds: the frontend API base is inlined at build time, so it must
+# match the ingress host (README §k8s).
+K8S_FRONTEND_ORIGIN ?= http://clinicpilot.local
+
+.PHONY: dev-backend dev-ai dev-frontend test compose-up compose-down k8s-build k8s-apply k8s-delete
 
 dev-backend:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" .venv/bin/uvicorn app.main:app --reload --port 8000
@@ -24,3 +28,16 @@ compose-up:
 
 compose-down:
 	docker compose down -v
+
+# --- k8s (demo-grade manifests; images must be visible to the cluster node:
+# minikube: `minikube image load clinicpilot/backend:latest ...`, kind: `kind load docker-image ...`) ---
+k8s-build:
+	docker build -f backend/Dockerfile -t clinicpilot/backend:latest .
+	docker build -t clinicpilot/ai:latest ./ai-service
+	docker build --build-arg NEXT_PUBLIC_API_URL=$(K8S_FRONTEND_ORIGIN) -t clinicpilot/frontend:latest ./frontend
+
+k8s-apply:
+	kubectl apply -f k8s/
+
+k8s-delete:
+	kubectl delete namespace clinicpilot --ignore-not-found

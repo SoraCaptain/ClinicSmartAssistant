@@ -92,8 +92,12 @@ class ChatTrace:
 
 
 @contextmanager
-def trace_chat(user_id: str, session_id: str) -> Iterator[ChatTrace]:
-    """Wrap one graph invocation in the v4 tracing root.
+def trace_chat(
+    user_id: str | None = None,
+    session_id: str | None = None,
+    name: str = TRACE_NAME,
+) -> Iterator[ChatTrace]:
+    """Wrap one LLM run (graph turn or standalone call) in the v4 tracing root.
 
     Enters the enclosing observation + ``propagate_attributes()`` BEFORE the
     ainvoke call (context copies taken inside langchain/langgraph inherit the
@@ -114,13 +118,13 @@ def trace_chat(user_id: str, session_id: str) -> Iterator[ChatTrace]:
 
         client = get_client()
         stack.enter_context(
-            client.start_as_current_observation(as_type="span", name=TRACE_NAME)
+            client.start_as_current_observation(as_type="span", name=name)
         )
         stack.enter_context(
             propagate_attributes(
                 user_id=user_id,
                 session_id=session_id,
-                trace_name=TRACE_NAME,
+                trace_name=name,
             )
         )
         handler = CallbackHandler()
@@ -135,7 +139,7 @@ def trace_chat(user_id: str, session_id: str) -> Iterator[ChatTrace]:
         yield ChatTrace(
             callbacks=[handler],
             metadata={
-                "langfuse_trace_name": TRACE_NAME,
+                "langfuse_trace_name": name,
                 "langfuse_user_id": user_id,
                 "langfuse_session_id": session_id,
             },

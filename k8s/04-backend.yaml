@@ -1,0 +1,70 @@
+# backend — image CMD seeds (idempotent, P4) then serves. DATABASE_URL is
+# assembled from the secret pieces with k8s $(VAR) expansion of the earlier
+# env entries. Single replica: seed race-free demo grade.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: clinicpilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: clinicpilot/backend:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: clinicpilot-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clinicpilot-secrets
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: clinicpilot-secrets
+                  key: POSTGRES_DB
+            - name: DATABASE_URL
+              value: postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+            - name: AI_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: clinicpilot-config
+                  key: AI_SERVICE_URL
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: clinicpilot
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 8000
+      targetPort: 8000

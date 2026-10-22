@@ -9,9 +9,11 @@ import type { BookingJoined } from "@/lib/types";
 export default function BookingsPanel({
   patientId = PATIENT_ID,
   refreshKey = 0,
+  bare = false,
 }: {
   patientId?: string;
   refreshKey?: number;
+  bare?: boolean; // tab-embedded mode: the page-level tab bar already labels this pane
 }) {
   const [rows, setRows] = useState<BookingJoined[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -41,10 +43,12 @@ export default function BookingsPanel({
 
   return (
     <section className="flex h-[70vh] min-h-[480px] flex-col rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-          My bookings
-        </h2>
+      <div className={"mb-2 flex items-center " + (bare ? "justify-end" : "justify-between")}>
+        {!bare && (
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+            My bookings
+          </h2>
+        )}
         <button
           type="button"
           onClick={() => void load()}

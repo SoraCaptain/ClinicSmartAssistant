@@ -8,9 +8,37 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-def test_health_ok():
+def test_health_ok(monkeypatch):
+    monkeypatch.setattr("app.main.probe_backend", lambda: True)
     with TestClient(app) as client:
         resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "backend": "up"}
+
+
+def test_health_backend_down_returns_503(monkeypatch):
+    """K8s readiness (DESIGN §9): backend unreachable → degraded, 503."""
+    monkeypatch.setattr("app.main.probe_backend", lambda: False)
+    with TestClient(app) as client:
+        resp = client.get("/health")
+    assert resp.status_code == 503
+    assert resp.json() == {"status": "degraded", "backend": "down"}
+
+
+def test_probe_backend_refused_connection_is_false(monkeypatch):
+    """A real refused connection (port 1) must report down, not raise."""
+    monkeypatch.setattr("app.core.config.settings.backend_url", "http://127.0.0.1:1")
+    from app.main import probe_backend
+
+    assert probe_backend() is False
+
+
+def test_livez_is_process_only(monkeypatch):
+    """Liveness carries no dependency gates: a backend outage must not restart
+    this pod and wipe the in-memory checkpointer."""
+    monkeypatch.setattr("app.main.probe_backend", lambda: False)  # backend down, livez must not care
+    with TestClient(app) as client:
+        resp = client.get("/livez")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
 

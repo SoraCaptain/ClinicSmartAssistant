@@ -6,6 +6,10 @@ RUN npm ci
 
 FROM node:20-alpine AS build
 WORKDIR /app
+# Inlined into the client bundle at build time (same-origin deployments pass the
+# public origin, e.g. k8s ingress; the default keeps the compose/dev fallback.)
+ARG NEXT_PUBLIC_API_URL="http://localhost:8000"
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

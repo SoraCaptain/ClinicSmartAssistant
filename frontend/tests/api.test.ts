@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { API_BASE, getBookings, getPatientContext, postChat } from "@/lib/api";
+import { API_BASE, getBookings, getPatientContext, postChat, postSummarize } from "@/lib/api";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -64,5 +64,28 @@ describe("api client", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(`${API_BASE}/api/patients/P001/context`);
+  });
+
+  it("postSummarize POSTs {transcript} to /api/summarize/transcript", async () => {
+    const body = {
+      chief_complaint: "knee pain",
+      diagnosis: "strain",
+      medication: "ibuprofen",
+      doctor_instructions: "rest",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, body));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await postSummarize("Patient: knee pain.");
+
+    expect(res).toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/api/summarize/transcript`,
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: "Patient: knee pain." }),
+      }),
+    );
   });
 });

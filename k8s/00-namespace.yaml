@@ -1,0 +1,5 @@
+# ClinicPilot namespace — applied first (numbered files apply in order).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clinicpilot

@@ -68,3 +68,11 @@ export interface ChatMessage {
   booking?: BookingOut; // confirmation card when a turn completed a booking
   isError?: boolean;
 }
+
+/** POST /api/summarize/transcript (bonus, DESIGN §6). */
+export interface SummaryResult {
+  chief_complaint: string;
+  diagnosis: string;
+  medication: string;
+  doctor_instructions: string;
+}

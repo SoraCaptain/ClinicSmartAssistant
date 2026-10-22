@@ -15,3 +15,11 @@ async def chat(payload: dict) -> dict:
         resp = await client.post(f"{settings.ai_service_url}/chat", json=payload)
         resp.raise_for_status()
         return resp.json()
+
+
+async def summarize(payload: dict) -> dict:
+    """POST /summarize on ai-service; returns the parsed JSON body."""
+    async with httpx.AsyncClient(timeout=settings.ai_service_timeout) as client:
+        resp = await client.post(f"{settings.ai_service_url}/summarize", json=payload)
+        resp.raise_for_status()
+        return resp.json()

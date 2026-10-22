@@ -4,11 +4,18 @@ network-safe (any scripted intent can route anywhere); catalog_fakes overrides t
 default catalog/patient/booking tool data — call it AFTER fake_chains so its patches
 win. Booking fakes patch the tool symbols at the booking_flow module for the same reason."""
 
+from contextlib import contextmanager
+
+import langfuse
+import langfuse.langchain
 import pytest
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
 
 from app.agent.nodes.booking_flow import ExtractedSlots
 from app.agent.nodes.classifier import ClassifierOutput
+from app.agent.observability import tracing
+from app.core.config import settings
 
 # Canned catalog mirroring the seed rows (fields the nodes read)
 DOCTORS = [
@@ -254,3 +261,78 @@ def booking_fakes(monkeypatch):
         return {"slots": slot_chain, "create": create}
 
     return install
+
+
+class FakeRootObservation:
+    """Root observation stand-in; only its context-manager role matters now
+    (tags ride propagate_attributes instead — v4 has no Span.update(tags))."""
+
+    def update(self, **kwargs):
+        raise AssertionError("Span.update must not be used for tags (v4 drops them)")
+
+
+class FakeClient:
+    def __init__(self):
+        self.root = FakeRootObservation()
+        self.started = None
+        self.shutdown_calls = 0
+
+    def start_as_current_observation(self, *, as_type, name):
+        self.started = (as_type, name)
+
+        @contextmanager
+        def cm():
+            yield self.root
+
+        return cm()
+
+    def shutdown(self):
+        self.shutdown_calls += 1
+
+
+class FakeHandler(BaseCallbackHandler):
+    """No-op stand-in for the Langfuse CallbackHandler (langchain calls its
+    event methods during the run; BaseCallbackHandler provides no-ops)."""
+
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        FakeHandler.instances.append(self)
+
+
+@pytest.fixture()
+def langfuse_fakes(monkeypatch):
+    """Install fake langfuse surface + keys + fresh latches; returns handles.
+
+    tracing.py imports lazily inside its functions, so patching the package
+    attributes is enough — no real OTel provider is ever registered."""
+    monkeypatch.setattr(tracing, "_client_ready", False)
+    monkeypatch.setattr(tracing, "_client_dead", False)
+    monkeypatch.setattr(settings, "langfuse_public_key", "pk-test")
+    monkeypatch.setattr(settings, "langfuse_secret_key", "sk-test")
+    monkeypatch.setattr(settings, "langfuse_host", "")
+
+    client = FakeClient()
+    propagated = {}
+    constructor_kwargs = {}
+
+    def fake_langfuse(**kwargs):
+        constructor_kwargs.update(kwargs)
+        return None
+
+    @contextmanager
+    def fake_propagate_attributes(**kwargs):
+        propagated.update(kwargs)
+        yield
+
+    monkeypatch.setattr(langfuse, "Langfuse", fake_langfuse)
+    monkeypatch.setattr(langfuse, "get_client", lambda: client)
+    monkeypatch.setattr(langfuse, "propagate_attributes", fake_propagate_attributes)
+    monkeypatch.setattr(langfuse.langchain, "CallbackHandler", FakeHandler)
+    FakeHandler.instances.clear()
+
+    return {
+        "client": client,
+        "propagated": propagated,
+        "constructor": constructor_kwargs,
+    }
