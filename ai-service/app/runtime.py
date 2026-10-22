@@ -23,6 +23,8 @@ async def handle_chat(req: ChatRequest) -> ChatResponse:
         "patient_id": req.patient_id or settings.default_patient_id,  # P8 default
         "user_message": req.message,
         "messages": [{"role": "user", "content": req.message}],
+        # clear last turn's booking so the response never re-emits a stale one
+        "booking_created": None,
     }
     result = await graph.ainvoke(state, config)
     return ChatResponse(

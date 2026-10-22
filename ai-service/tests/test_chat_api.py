@@ -29,19 +29,28 @@ def test_chat_general_roundtrip(fake_chains):
     }
 
 
-def test_chat_routes_book_appointment_stub(fake_chains):
-    from app.agent.nodes import booking_flow as booking_flow_mod
-
-    fake_chains("book_appointment")
+def test_chat_booking_flow_returns_then_clears_booking_created(fake_chains, booking_fakes):
+    """Full booking through POST /chat: confirmation turn returns booking_created;
+    the next (non-booking) turn must not re-emit it."""
+    fake_chains(["book_appointment", ("book_appointment", True), "general"])
+    booking_fakes(
+        slots=[
+            {"treatment": "joint pain consultation", "doctor": "Dr. Wilson",
+             "booking_date": "2026-11-21", "booking_time": "09:30"},
+            {}, {},
+        ],
+        create_result={"booking_id": "B7x", "status": "Confirmed"},
+    )
+    session_id = uuid.uuid4().hex
     with TestClient(app) as client:
-        resp = client.post(
-            "/chat",
-            json={"session_id": uuid.uuid4().hex, "message": "book a massage please"},
-        )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["intent"] == "book_appointment"
-    assert body["reply"] == booking_flow_mod.REPLY
+        r1 = client.post("/chat", json={"session_id": session_id, "message": "book joint pain with Dr. Wilson on the 21st at 9:30"})
+        r2 = client.post("/chat", json={"session_id": session_id, "message": "yes"})
+        r3 = client.post("/chat", json={"session_id": session_id, "message": "thanks!"})
+
+    assert r1.json()["booking_created"] is None  # confirmation turn: summary, no booking yet
+    assert r2.json()["booking_created"] == {"booking_id": "B7x", "status": "Confirmed"}
+    assert r3.json()["booking_created"] is None  # per-turn reset
+    assert r3.json()["intent"] == "general"
 
 
 def test_chat_rejects_empty_message():

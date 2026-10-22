@@ -1,5 +1,6 @@
-"""Routing contract (slice-2 done-when): each of the 4 intents reaches its own node,
-and conversation history persists across turns on the same thread (P1 context)."""
+"""Routing contract (slice 2): each single-node intent reaches its own node, and
+conversation history persists across turns on the same thread (P1 context). The
+booking fan-out is covered in test_booking_flow.py."""
 
 import uuid
 
@@ -7,14 +8,12 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agent.graph import build_clinic_graph
-from app.agent.nodes import booking_flow as booking_flow_mod
 from app.agent.nodes import bookings_query as bookings_query_mod
 from app.agent.nodes import qa as qa_mod
 
 INTENT_EXPECTED_REPLY = {
     "qa": qa_mod.REPLY,
     "check_bookings": bookings_query_mod.REPLY,
-    "book_appointment": booking_flow_mod.REPLY,
     "general": "Hi there!",
 }
 
@@ -35,6 +34,21 @@ def test_routes_each_intent_to_its_node(fake_chains, intent, expected_reply):
 
     assert result["intent"] == intent
     assert result["reply"] == expected_reply
+
+
+def test_book_appointment_enters_slot_filling(fake_chains, booking_fakes):
+    """The booking intent routes into extract_slots → ask_missing (no LLM beyond
+    the scripted extractor; create_booking untouched)."""
+    fake_chains("book_appointment")
+    fakes = booking_fakes(slots=[{}])
+    graph = build_clinic_graph(InMemorySaver())
+
+    result = _invoke(graph, "I want to book something", uuid.uuid4().hex)
+
+    assert result["intent"] == "book_appointment"
+    assert result["reply"] == "Which treatment would you like to book?"
+    assert len(fakes["slots"].prompts) == 1
+    assert fakes["create"].calls == []
 
 
 def test_history_persists_across_turns_on_same_thread(fake_chains):

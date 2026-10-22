@@ -15,6 +15,7 @@ class ClinicGraphState(TypedDict, total=False):
     messages: Annotated[list, add_messages]
     user_message: str
     intent: str  # qa | check_bookings | book_appointment | general
+    user_confirms: bool | None  # classifier's confirmation verdict while a draft awaits
     retrieved: list  # rows pulled by catalog tools (slice 4)
     booking_draft: dict  # slot-filling state (slice 3)
     booking_created: dict | None  # persisted booking (slice 3)

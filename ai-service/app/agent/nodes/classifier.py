@@ -5,7 +5,12 @@ from typing import Literal
 from pydantic import BaseModel
 
 from app.agent.llm import get_chat_model
-from app.agent.prompts import CLASSIFIER_SYSTEM, CLASSIFIER_USER, render_history
+from app.agent.prompts import (
+    CLASSIFIER_SYSTEM,
+    CLASSIFIER_USER,
+    render_booking_draft,
+    render_history,
+)
 from app.agent.state import ClinicGraphState
 
 INTENTS = ("qa", "check_bookings", "book_appointment", "general")
@@ -13,6 +18,8 @@ INTENTS = ("qa", "check_bookings", "book_appointment", "general")
 
 class ClassifierOutput(BaseModel):
     intent: Literal[INTENTS]
+    # set only while a booking summary awaits confirmation (prompt rules above)
+    user_confirms: bool | None = None
 
 
 def get_classifier_chain():
@@ -27,8 +34,9 @@ def classify_intent(state: ClinicGraphState) -> dict:
         f"{CLASSIFIER_SYSTEM}\n\n"
         + CLASSIFIER_USER.format(
             history=render_history(state.get("messages", [])),
+            draft=render_booking_draft(state.get("booking_draft")),
             message=state["user_message"],
         )
     )
     result = get_classifier_chain().invoke(prompt)
-    return {"intent": result.intent}
+    return {"intent": result.intent, "user_confirms": result.user_confirms}
