@@ -1,15 +1,24 @@
-"""FastAPI app: POST /chat (graph runtime), GET /health."""
+"""FastAPI app: POST /chat (graph runtime), GET /health; lifespan flushes Langfuse."""
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.agent.observability.tracing import shutdown_tracing
 from app.runtime import handle_chat
 from app.schemas.chat import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="ClinicPilot AI Service", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    shutdown_tracing()  # P6: flush pending spans at shutdown; no-op when off
+
+
+app = FastAPI(title="ClinicPilot AI Service", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")

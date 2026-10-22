@@ -39,3 +39,29 @@ def test_seed_skips_populated_table_even_if_partial(db):
     db.commit()
     seed(db)
     assert (db.scalar(select(func.count()).select_from(Booking)) or 0) == 3
+
+
+def test_seed_insert_order_respects_fks_on_fresh_schema():
+    """Regression (slice 6, postgres): with autoflush=False and no ORM relationships
+    the commit-time unit-of-work flushes tables in arbitrary order — on
+    FK-enforcing databases the seed hit 'patient_treatment_history before doctors'
+    (compose first boot). sqlite skips FK checks by default, so this test enables
+    them and replays a fresh-container seed: create_all → seed → commit."""
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database import Base
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def _enforce_fks(dbapi_conn, _):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with session_factory() as session:
+        inserted = seed(session)
+    assert sum(inserted.values()) == sum(EXPECTED_COUNTS.values())

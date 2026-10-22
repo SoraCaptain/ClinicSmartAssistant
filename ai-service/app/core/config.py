@@ -17,5 +17,10 @@ class Settings(BaseSettings):
     # REST tools target (P3: ai-service never touches the DB; used from slice 3 on)
     backend_url: str = "http://localhost:8000"
 
+    # Langfuse (P6: absent keys → tracing off; /chat unaffected either way)
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = ""
+
 
 settings = Settings()

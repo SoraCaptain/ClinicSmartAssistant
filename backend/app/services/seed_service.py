@@ -75,6 +75,11 @@ def seed(db: Session, data_dir: Path | None = None) -> dict[str, int]:
         for row in _rows(data_dir / filename):
             db.merge(model(**coerce(row)))  # upsert by PK
             count += 1
+        # flush per table: parents become visible in-transaction when the next
+        # table's FKs are checked. The commit-time unit-of-work batch order is
+        # arbitrary without ORM relationships — postgres caught an FK violation
+        # (history before doctors); sqlite never did (FKs off by default)
+        db.flush()
         inserted[model.__tablename__] = count
         logger.info("seed: %s <- %s (%d rows)", model.__tablename__, filename, count)
     db.commit()

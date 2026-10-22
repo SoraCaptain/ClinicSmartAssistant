@@ -1,0 +1,16 @@
+# root-context .dockerignore (backend image build; context = repo root)
+# keeps the heavy/secret stuff out of the context; Dockerfile COPYs only
+# backend/{pyproject.toml,uv.lock,app,scripts} + mock-data
+.git
+.pi
+.env
+*.md
+Makefile
+docker-compose.yml
+ai-service
+frontend
+backend/.venv
+backend/.pytest_cache
+backend/tests
+**/__pycache__
+**/*.pyc

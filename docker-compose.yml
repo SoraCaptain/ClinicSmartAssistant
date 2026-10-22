@@ -1,0 +1,78 @@
+# ClinicPilot AI — full stack (DESIGN §9): postgres → backend (seeded) → ai → frontend.
+# Env passthrough from the root .env: OPENAI_*, LLM_MODEL, DEFAULT_PATIENT_ID, LANGFUSE_*.
+# Demo creds hardcoded (demo-grade); postgres is NOT published to the host — the
+# host's 5432 belongs to other stacks, and nothing outside compose needs it.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: clinicpilot
+      POSTGRES_PASSWORD: clinicpilot
+      POSTGRES_DB: clinicpilot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clinicpilot -d clinicpilot"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://clinicpilot:clinicpilot@postgres:5432/clinicpilot
+      AI_SERVICE_URL: http://ai:8001
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; r=json.load(urllib.request.urlopen('http://localhost:8000/api/health')); assert r['db']=='up', r"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  ai:
+    build:
+      context: ./ai-service
+    environment:
+      BACKEND_URL: http://backend:8000
+      DEFAULT_PATIENT_ID: ${DEFAULT_PATIENT_ID:-P001}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      # P6: absent keys → tracing off inside the container
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+    ports:
+      - "8001:8001"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; assert json.load(urllib.request.urlopen('http://localhost:8001/health'))['status']=='ok'"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
