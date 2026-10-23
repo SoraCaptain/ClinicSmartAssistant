@@ -12,7 +12,7 @@ dev-backend:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" .venv/bin/uvicorn app.main:app --reload --port 8000
 
 dev-ai:
-	cd ai-service && .venv/bin/uvicorn app.main:app --reload --port 8001
+	cd ai-service && set -a && . ../.env && set +a && .venv/bin/uvicorn app.main:app --reload --port 8001
 
 dev-frontend:
 	cd frontend && npm run dev
