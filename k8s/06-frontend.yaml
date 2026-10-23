@@ -18,6 +18,7 @@ spec:
       containers:
         - name: frontend
           image: clinicpilot/frontend:latest
+          imagePullPolicy: IfNotPresent # :latest defaults to Always; image is node-local
           ports:
             - containerPort: 3000
           readinessProbe:

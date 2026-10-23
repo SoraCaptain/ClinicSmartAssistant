@@ -59,7 +59,8 @@ Python services use `uv` (`uv sync` inside `backend/` / `ai-service/`); the fron
 ## Kubernetes (demo-grade)
 
 ```bash
-# 1. set secrets (at minimum OPENAI_API_KEY)
+# 1. set secrets (at minimum OPENAI_API_KEY; non-OpenAI providers must also
+#    set OPENAI_BASE_URL / LLM_MODEL — non-thinking — in k8s/01-config.yaml)
 $EDITOR k8s/02-secret.yaml
 # 2. build the three images (frontend bakes the ingress origin into its bundle)
 make k8s-build                    # K8S_FRONTEND_ORIGIN defaults to http://clinicpilot.local

@@ -19,6 +19,7 @@ spec:
       containers:
         - name: backend
           image: clinicpilot/backend:latest
+          imagePullPolicy: IfNotPresent # :latest defaults to Always; image is node-local
           ports:
             - containerPort: 8000
           env:

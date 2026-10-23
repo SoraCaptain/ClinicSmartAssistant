@@ -20,6 +20,7 @@ spec:
       containers:
         - name: ai
           image: clinicpilot/ai:latest
+          imagePullPolicy: IfNotPresent # :latest defaults to Always; image is node-local
           ports:
             - containerPort: 8001
           envFrom:
