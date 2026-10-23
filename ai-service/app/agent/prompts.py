@@ -174,7 +174,8 @@ def render_catalog(treatments: list[dict], doctors: list[dict], clinics: list[di
             doctors,
             lambda d: (
                 f"[{d['doctor_id']}] {d['full_name']} | {d['specialty']} | "
-                f"${d['consultation_fee_usd']} | languages: {d['languages_spoken']} | {d['bio']}"
+                f"practices at {d['clinic_id']} | ${d['consultation_fee_usd']} | "
+                f"languages: {d['languages_spoken']} | {d['bio']}"
             ),
         ),
         section(

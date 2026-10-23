@@ -148,6 +148,16 @@ def test_partial_match_still_grounds_every_roster_row(catalog_fakes):
     assert [c["clinic_id"] for c in result["clinics"]] == ["C001", "C002"]
 
 
+def test_render_catalog_joins_doctor_to_clinic():
+    """Regression: 'which clinic does Dr. Wilson practice at?' drew an honest
+    'can't confirm' — retrieval already unions the doctor's clinic rows in, but the
+    Doctors block dropped clinic_id, so no prompt line linked D104 to a clinic."""
+    rendered = render_catalog([], DOCTORS, CLINICS)
+
+    assert "[D104] Dr. James Wilson | Orthopedics | practices at C001" in rendered
+    assert "[C001] Metro Care Health Clinic" in rendered  # the join target is grounded too
+
+
 def test_render_catalog_carries_cancellation_and_emergency():
     rendered = render_catalog([], [], CLINICS)
 
