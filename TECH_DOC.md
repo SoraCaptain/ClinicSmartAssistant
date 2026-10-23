@@ -150,18 +150,20 @@ Pydantic validation; errors as `{detail}`; 422 on validation, 404 unknown ids, 5
 | Endpoint | Contract |
 |----------|----------|
 | `GET /api/health` | `{status:"ok"\|"degraded", db:"up"\|"down"}` |
-| `POST /api/chat` | `{session_id, message, patient_id?}` → `{reply, intent, booking_created?, session_id}`; proxies to ai-service `POST /chat` |
+| `POST /api/chat` | `{session_id, message, patient_id?}` → `{reply, intent, booking_created?, session_id}`; proxies to ai-service `POST /chat`; on success persists the turn (§7 chat tables) |
 | `GET /api/bookings?patient_id=` | joined read model: booking + doctor name/specialty + treatment name + clinic name + status/date/time/notes/created_at (P5) |
 | `POST /api/bookings` | `{patient_id, doctor_id, treatment_id, booking_date (YYYY-MM-DD), booking_time (HH:MM), notes?}` → `201` + persisted booking; FK existence + format validation; no conflict check; server-generated `booking_id` = `B` + uuid hex prefix |
 | `GET /api/doctors?specialty=` `GET /api/treatments?search=` `GET /api/clinics` | catalog reads (§5.3 contains-match) |
 | `GET /api/patients/{id}/context` | profile + allergies + treatment history + upcoming bookings (P8 payload) |
 | `POST /api/summarize/transcript` | bonus: `{transcript}` → `{chief_complaint, diagnosis, medication, doctor_instructions}` (proxied to ai-service `/summarize`) |
+| `GET /api/chat/sessions` | multi-session chat: `[{session_id, title, created_at, updated_at}]`, most recently active first; title = first user message (≤60 chars) |
+| `GET /api/chat/sessions/{session_id}/messages` | persisted transcript `[{id, session_id, role, content, intent, booking, created_at}]` in order; 404 unknown session |
 
 No inter-service auth (internal network); noted for k8s hardening.
 
 ## 7. Database Schema (PostgreSQL 16)
 
-Six tables mirror the CSVs 1:1 (snake_case, string PKs `C001/D101/T005/P001/B1004/H9001`), plus booking audit columns:
+Six tables mirror the CSVs 1:1 (snake_case, string PKs `C001/D101/T005/P001/B1004/H9001`), plus booking audit columns, plus the two chat-history tables (multi-session chat):
 
 ```
 clinics(clinic_id PK, clinic_name, address, phone, operating_hours, cancellation_policy, emergency_instructions)
@@ -172,19 +174,34 @@ patient_bookings(booking_id PK, patient_id FK, doctor_id FK, treatment_id FK, bo
                  status default 'Confirmed', notes, created_at timestamptz default now(), source default 'chatbot')
 patient_treatment_history(record_id PK, patient_id FK, doctor_id FK, visit_date date,
                           chief_complaint, diagnosis, prescribed_medication, doctor_notes)
+chat_sessions(session_id PK, patient_id default 'P001', title varchar(60), created_at timestamptz, updated_at timestamptz)
+chat_messages(id PK autoincrement, session_id FK→chat_sessions, role, content, intent nullable,
+              booking_json text nullable, created_at timestamptz)
 ```
+
+Multi-session chat: `chat_sessions` rows are created lazily by a session's first *successful* chat turn
+(failed turns persist nothing — P7 stays fail-loud and the sidebar never lists empty sessions); each turn
+appends user + assistant rows (`booking_json` snapshots `booking_created` so the confirmation card replays
+from history) and bumps `updated_at`. The backend owns the durable transcript; agent memory stays in the
+ai-service thread checkpointer — after an ai-service restart an old thread resumes empty while its
+transcript still renders (demo-grade `MemorySaver` tradeoff). A persistence failure after a successful
+turn degrades to a logged transcript gap — the turn is still served so a retry can't double-book.
 
 Seed: `scripts/seed.py` reads `mock-data/*.csv` (stdlib `csv` — the files have no trailing newline), upserts by PK, skips populated tables, and flushes per table in FK order (single-`commit` unit-of-work ordering is not deterministic on Postgres — regression-tested against sqlite with `PRAGMA foreign_keys=ON`). Demo data anchor: 2 clinics, 4 doctors, 5 treatments, 3 patients, 4 bookings (P001: B1001 General Checkup 2026-11-05, B1004 knee consult 2026-11-15), 2 history rows; P001 allergies: Penicillin, Peanuts.
 
 ## 8. Frontend (Next.js 14, App Router, Tailwind)
 
-Single page `/`, three panes:
+Single page `/`, four panes:
 
+- **SessionSidebar** — "New session" button + persisted session list (`GET /api/chat/sessions`, refreshed after each turn); clicking a session loads its transcript (`GET /api/chat/sessions/{id}/messages`; 404 → greeting only) and chatting continues that session's agent thread. Old sessions are never deleted.
 - **PatientCard** — P001 profile + allergy badges (from `/api/patients/{id}/context`).
-- **ChatPanel** — message list + input; `POST /api/chat`; renders `booking_created` as a confirmation card, shows an intent chip, and bumps the shared refresh key so bookings/patient card refetch without polling (P5 visible live). Errors surface verbatim (P7).
+- **ChatPanel** — message list + input; `POST /api/chat`; renders `booking_created` as a confirmation card (replayed from history too), shows an intent chip, and bumps the shared refresh key so bookings/patient card refetch without polling (P5 visible live). Errors surface verbatim (P7); the greeting and error bubbles are client-only.
 - **Right pane, tabbed** — **BookingsPanel** (`GET /api/bookings?patient_id=P001`, refresh button + auto-refresh on `booking_created`) and the bonus **SummarizerTab** (textarea → `POST /api/summarize/transcript` → four-field structured view).
 
-`session_id`: `crypto.randomUUID()` with a `getRandomValues` v4 fallback (non-secure contexts), persisted in localStorage. API base: `NEXT_PUBLIC_API_URL`, **inlined at build time** (default `http://localhost:8000` for dev/compose; the k8s image builds with the ingress origin).
+Active `session_id`: uuid persisted in localStorage (`getSessionId`; selecting a session rewrites it via
+`setSessionId`, "New session" remints via `newSessionId`); `crypto.randomUUID()` with a `getRandomValues`
+v4 fallback (non-secure contexts). API base: `NEXT_PUBLIC_API_URL`, **inlined at build time** (default
+`http://localhost:8000` for dev/compose; the k8s image builds with the ingress origin).
 
 ## 9. DevOps
 

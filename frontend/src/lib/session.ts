@@ -25,3 +25,22 @@ export function getSessionId(): string {
   }
   return id;
 }
+
+/** Make an existing session the active one (sidebar selection persists across reloads). */
+export function setSessionId(id: string): void {
+  if (typeof window === "undefined") {
+    throw new Error("setSessionId is browser-only");
+  }
+  window.localStorage.setItem(STORAGE_KEY, id);
+}
+
+/** Start a new chat session: mint a fresh id, make it the active one, return it.
+ * The old session's transcript stays in the backend (sidebar can reopen it). */
+export function newSessionId(): string {
+  if (typeof window === "undefined") {
+    throw new Error("newSessionId is browser-only");
+  }
+  const id = uuidV4();
+  window.localStorage.setItem(STORAGE_KEY, id);
+  return id;
+}

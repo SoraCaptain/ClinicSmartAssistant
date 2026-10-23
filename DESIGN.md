@@ -106,7 +106,7 @@ ClinicSmartAssistant/
 │   └── pyproject.toml
 ├── frontend/                       # Next.js 14 App Router + Tailwind
 │   ├── src/app/{page,layout}.tsx
-│   ├── src/components/             # ChatPanel, MessageBubble, BookingsPanel, PatientCard, SummarizerTab
+│   ├── src/components/             # SessionSidebar, ChatPanel, MessageBubble, BookingsPanel, PatientCard, SummarizerTab
 │   ├── src/lib/{api.ts, types.ts}  # typed client; session id (crypto.randomUUID, localStorage)
 │   ├── Dockerfile                  # multi-stage → next standalone
 │   └── package.json
@@ -222,7 +222,9 @@ the chat proxy when ai-service is down (P7).
 | Endpoint | Contract |
 |----------|----------|
 | `GET /api/health` | `{status:"ok", db:"up"\|"down"}` (probe target) |
-| `POST /api/chat` | req `{session_id, message, patient_id?}` → resp `{reply, intent, booking_created?, session_id}`; proxies to ai-service `POST /chat` |
+| `POST /api/chat` | req `{session_id, message, patient_id?}` → resp `{reply, intent, booking_created?, session_id}`; proxies to ai-service `POST /chat`; on success persists the turn (§7 chat tables — multi-session chat) |
+| `GET /api/chat/sessions` | chat session list (sidebar): `[{session_id, title, created_at, updated_at}]`, most recently active first; title = first user message (≤60 chars) |
+| `GET /api/chat/sessions/{session_id}/messages` | persisted transcript `[{id, session_id, role, content, intent, booking, created_at}]` in order; `booking` replays `booking_created` for the confirmation card; 404 unknown session |
 | `GET /api/bookings?patient_id=` | joined read model for the UI: booking + doctor name/specialty + treatment name + clinic name + status/date/time/notes/created_at (P5) |
 | `POST /api/bookings` | req `{patient_id, doctor_id, treatment_id, booking_date (YYYY-MM-DD), booking_time (HH:MM), notes?}` → `201` + persisted booking; FK existence + format validation; no conflict check; server-generated unique `booking_id` |
 | `GET /api/doctors?specialty=` `GET /api/treatments?search=` `GET /api/clinics` | catalog reads (§5.3 contains-match) for the agent tools |
@@ -234,7 +236,8 @@ No inter-service auth (internal network); noted for k8s hardening in §9.
 ## 7. Database Schema (PostgreSQL 16)
 
 Six tables mirror the CSVs 1:1 (snake_case, string PKs kept: `C001/D101/T005/P001/B1004/H9001`), plus
-booking audit columns. `Numeric(10,2)` for fees/prices, `Date`/`Time` for date/time.
+booking audit columns, plus the two chat-history tables (multi-session chat). `Numeric(10,2)` for
+fees/prices, `Date`/`Time` for date/time.
 
 ```
 clinics(clinic_id PK, clinic_name, address, phone, operating_hours, cancellation_policy, emergency_instructions)
@@ -246,7 +249,20 @@ patient_bookings(booking_id PK, patient_id FK, doctor_id FK, treatment_id FK,
                  created_at timestamptz default now(), source varchar default 'chatbot')
 patient_treatment_history(record_id PK, patient_id FK, doctor_id FK, visit_date date,
                           chief_complaint, diagnosis, prescribed_medication, doctor_notes)
+chat_sessions(session_id PK, patient_id default 'P001', title varchar(60),
+              created_at timestamptz, updated_at timestamptz)
+chat_messages(id PK autoincrement, session_id FK→chat_sessions, role, content, intent nullable,
+              booking_json text nullable, created_at timestamptz)
 ```
+
+Multi-session chat: a `chat_sessions` row is created lazily by the session's first *successful*
+`POST /api/chat` turn (failed turns persist nothing — no empty sessions, P7 stays fail-loud); every turn
+appends the user text + assistant reply (with `intent`; `booking_json` snapshots `booking_created`) and
+bumps `updated_at`. The backend owns the durable transcript; ai-service keeps owning agent memory
+(`thread_id = session_id` checkpointer) — after an ai-service restart an old thread's agent memory is
+empty while its transcript still renders (demo-grade, same tradeoff as `MemorySaver`). A persistence
+failure after a successful turn degrades to a logged transcript gap — the turn (and any booking it
+created) is still served, so a retry can't double-book.
 
 New `booking_id`: server-generated, `B` + short uuid suffix (single mechanism, collision-free; sequential
 `B1005`-style numbering deliberately not built). Seed: `scripts/seed.py` reads `mock-data/*.csv`, upserts by
@@ -257,16 +273,23 @@ history rows; P001 allergies: Penicillin, Peanuts.
 
 ## 8. Frontend (Next.js 14, App Router, Tailwind)
 
-Single page `/` — three panes, no styling ambition beyond clean:
+Single page `/` — four panes, no styling ambition beyond clean:
 
+- **SessionSidebar**: "New session" button + persisted session list (`GET /api/chat/sessions`, refreshed
+  after each turn); clicking a session switches the ChatPanel to it (transcript loads from
+  `GET /api/chat/sessions/{id}/messages`; 404 → greeting only) and chatting continues that session's
+  agent thread. New session = fresh uuid + empty chat; old sessions are never deleted.
 - **PatientCard**: P001 profile + allergy badges (from `/api/patients/{id}/context`).
 - **ChatPanel**: message list + input; POST `/api/chat` with `{session_id, message}`; renders
-  `booking_created` as a confirmation card and triggers BookingsPanel refresh; shows intent chip per reply.
+  `booking_created` as a confirmation card (replayed from history too) and triggers BookingsPanel
+  refresh; shows intent chip per reply. The greeting and error bubbles are client-only (never persisted).
 - **BookingsPanel**: table from `GET /api/bookings?patient_id=P001`; refresh button + auto-refresh on
   `booking_created` (P5 visible live). No polling.
 - **SummarizerTab** (bonus): textarea → `POST /api/summarize/transcript` → structured JSON view.
 
-`session_id`: `crypto.randomUUID()` persisted in localStorage. API base: `NEXT_PUBLIC_API_URL` (compose/k8s
+Active `session_id`: uuid persisted in localStorage (`getSessionId`); selecting a session or starting
+a new one rewrites it (`setSessionId` / `newSessionId`) — the choice survives reloads. API base:
+`NEXT_PUBLIC_API_URL` (compose/k8s
 route `/api` to backend via one origin; backend still enables CORS for split-origin dev).
 
 ## 9. DevOps

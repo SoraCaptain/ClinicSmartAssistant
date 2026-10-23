@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getSessionId } from "@/lib/session";
+import { getSessionId, newSessionId, setSessionId } from "@/lib/session";
 
 const STORAGE_KEY = "clinicpilot-session-id";
 
@@ -46,5 +46,25 @@ describe("getSessionId", () => {
     localStorage.clear();
     const second = getSessionId();
     expect(second).not.toBe(first);
+  });
+});
+
+describe("newSessionId", () => {
+  it("mints a different id, makes it active, and keeps it stable across reads", () => {
+    const before = getSessionId();
+    const fresh = newSessionId();
+    expect(fresh).not.toBe(before);
+    expect(fresh).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(fresh);
+    expect(getSessionId()).toBe(fresh); // the new session is the active one
+  });
+});
+
+describe("setSessionId", () => {
+  it("makes an existing session the active one across reads", () => {
+    getSessionId(); // mint something else first
+    setSessionId("s-old");
+    expect(localStorage.getItem(STORAGE_KEY)).toBe("s-old");
+    expect(getSessionId()).toBe("s-old");
   });
 });

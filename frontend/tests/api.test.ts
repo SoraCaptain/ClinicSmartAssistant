@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { API_BASE, getBookings, getPatientContext, postChat, postSummarize } from "@/lib/api";
+import {
+  API_BASE,
+  getBookings,
+  getChatMessages,
+  getChatSessions,
+  getPatientContext,
+  postChat,
+  postSummarize,
+} from "@/lib/api";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -42,6 +50,26 @@ describe("api client", () => {
     await expect(postChat("s1", "hello")).rejects.toThrow(
       "AI service unavailable: connection refused",
     );
+  });
+
+  it("getChatSessions lists persisted sessions", async () => {
+    const sessions = [{ session_id: "s1", title: "Old chat", created_at: "2026-10-23T09:00:00Z", updated_at: "2026-10-23T10:00:00Z" }];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, sessions));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getChatSessions();
+
+    expect(res).toEqual(sessions);
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE}/api/chat/sessions`);
+  });
+
+  it("getChatMessages fetches a session transcript with the id encoded", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, []));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getChatMessages("s 1");
+
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE}/api/chat/sessions/s%201/messages`);
   });
 
   it("getBookings queries by patient_id", async () => {

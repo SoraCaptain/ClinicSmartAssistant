@@ -2,9 +2,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import BookingsPanel from "@/components/BookingsPanel";
 import ChatPanel from "@/components/ChatPanel";
+import SessionSidebar from "@/components/SessionSidebar";
 import SummarizerTab from "@/components/SummarizerTab";
 import Home from "@/app/page";
-import type { BookingJoined, ChatResponse, PatientContext } from "@/lib/types";
+import type { BookingJoined, ChatHistoryMessage, ChatResponse, ChatSessionSummary, PatientContext } from "@/lib/types";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -87,15 +88,32 @@ describe("ChatPanel", () => {
   }
 
   async function send(message: string) {
+    // wait for the session's history fetch to settle — sending is gated on it
+    await waitFor(() =>
+      expect((screen.getByLabelText("Message") as HTMLInputElement).disabled).toBe(false),
+    );
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: message } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
   }
 
+  // History fetch (404 = fresh session → greeting) must not collide with the
+  // POST mock: route by URL like the Home tests do.
+  function stubFetch(POST: () => Response) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string | URL) =>
+        Promise.resolve(
+          String(url).includes("/messages") ? jsonResponse(404, { detail: "Unknown session" }) : POST(),
+        ),
+      ),
+    );
+  }
+
   it("renders reply + confirmation card and fires onBookingCreated exactly once when a booking is created", async () => {
     const onBookingCreated = vi.fn();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(200, chatResponse())));
+    stubFetch(() => jsonResponse(200, chatResponse()));
 
-    render(<ChatPanel onBookingCreated={onBookingCreated} />);
+    render(<ChatPanel sessionId="s1" onBookingCreated={onBookingCreated} />);
     await send("Book a general checkup");
 
     await waitFor(() => expect(screen.getByText(/You're booked!/)).toBeTruthy());
@@ -106,12 +124,11 @@ describe("ChatPanel", () => {
 
   it("fires onBookingCreated zero times when no booking is created", async () => {
     const onBookingCreated = vi.fn();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(jsonResponse(200, chatResponse({ reply: "Sure — which day?", booking_created: null, intent: "book_appointment" }))),
+    stubFetch(() =>
+      jsonResponse(200, chatResponse({ reply: "Sure — which day?", booking_created: null, intent: "book_appointment" })),
     );
 
-    render(<ChatPanel onBookingCreated={onBookingCreated} />);
+    render(<ChatPanel sessionId="s1" onBookingCreated={onBookingCreated} />);
     await send("Book a checkup");
 
     await waitFor(() => expect(screen.getByText(/which day\?/)).toBeTruthy());
@@ -120,14 +137,171 @@ describe("ChatPanel", () => {
   });
 
   it("surfaces a failed /api/chat as an error bubble (P7)", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(503, { detail: "AI service unavailable: connection refused" })));
+    stubFetch(() => jsonResponse(503, { detail: "AI service unavailable: connection refused" }));
 
-    render(<ChatPanel onBookingCreated={vi.fn()} />);
+    render(<ChatPanel sessionId="s1" onBookingCreated={vi.fn()} />);
     await send("hello");
 
     await waitFor(() => expect(screen.getByText(/AI service unavailable/)).toBeTruthy());
     // input is re-enabled after the failure
     expect((screen.getByLabelText("Message") as HTMLInputElement).disabled).toBe(false);
+  });
+  it("shows only the greeting for a session with no persisted turns", async () => {
+    stubFetch(() => jsonResponse(200, chatResponse()));
+
+    render(<ChatPanel sessionId="s-fresh" onBookingCreated={vi.fn()} />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/Hi John! I can answer questions/)).toBeTruthy(),
+    );
+    expect((screen.getByLabelText("Message") as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it("loads the persisted transcript for an old session (card + intent chip replayed)", async () => {
+    const history: ChatHistoryMessage[] = [
+      { id: 1, session_id: "s-old", role: "user", content: "Book a checkup please", intent: null, booking: null, created_at: "2026-10-22T09:00:00Z" },
+      {
+        id: 2,
+        session_id: "s-old",
+        role: "assistant",
+        content: "You're booked!",
+        intent: "book_appointment",
+        booking: {
+          booking_id: "B-old1",
+          patient_id: "P001",
+          doctor_id: "D101",
+          treatment_id: "T001",
+          booking_date: "2026-11-20",
+          booking_time: "14:00:00",
+          status: "Confirmed",
+          notes: null,
+          created_at: "2026-10-22T09:00:00Z",
+          source: "chatbot",
+        },
+        created_at: "2026-10-22T09:00:05Z",
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(200, history)),
+    );
+
+    render(<ChatPanel sessionId="s-old" onBookingCreated={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText("Book a checkup please")).toBeTruthy());
+    expect(screen.getByText(/You're booked!/)).toBeTruthy();
+    expect(screen.getByText("B-old1")).toBeTruthy(); // confirmation card replayed
+    expect(screen.getByText("book_appointment")).toBeTruthy(); // intent chip replayed
+  });
+
+  it("shows an error bubble when history fails to load (not on a fresh 404)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(503, { detail: "AI service unavailable" })),
+    );
+
+    render(<ChatPanel sessionId="s-old" onBookingCreated={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText(/Couldn't load this session's history/)).toBeTruthy());
+    expect(screen.queryByText(/Hi John!/)).toBeNull(); // greeting replaced, not faked
+  });
+
+  it("continues an old session: POSTs with its session_id and fires onTurnDone", async () => {
+    const onTurnDone = vi.fn();
+    const fetchMock = vi.fn().mockImplementation((url: string | URL) =>
+      Promise.resolve(
+        String(url).includes("/messages")
+          ? jsonResponse(404, { detail: "Unknown session" })
+          : jsonResponse(200, chatResponse({ reply: "Sure, continuing." })),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ChatPanel sessionId="s-old" onTurnDone={onTurnDone} onBookingCreated={vi.fn()} />);
+    await send("and one more thing");
+
+    await waitFor(() => expect(screen.getByText(/Sure, continuing\./)).toBeTruthy());
+    const postCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/api/chat"));
+    expect(JSON.parse(postCall![1].body)).toEqual({ session_id: "s-old", message: "and one more thing" });
+    expect(onTurnDone).toHaveBeenCalledTimes(1);
+  });
+  it("a mid-flight session switch still refreshes the sidebar and never leaks the reply", async () => {
+    let release: (v: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => (release = resolve));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string | URL) =>
+        String(url).includes("/messages")
+          ? jsonResponse(404, { detail: "Unknown session" })
+          : pending, // POST /api/chat hangs until we release it
+      ),
+    );
+    const onTurnDone = vi.fn();
+    const view = render(<ChatPanel sessionId="s-a" onTurnDone={onTurnDone} onBookingCreated={vi.fn()} />);
+    await waitFor(() => expect((screen.getByLabelText("Message") as HTMLInputElement).disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "slow turn" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    view.rerender(<ChatPanel sessionId="s-b" onTurnDone={onTurnDone} onBookingCreated={vi.fn()} />); // switch away
+    release(jsonResponse(200, chatResponse({ reply: "reply for session A" })));
+
+    await waitFor(() => expect(onTurnDone).toHaveBeenCalledTimes(1)); // turn persisted → sidebar refreshed
+    await waitFor(() =>
+      expect((screen.getByLabelText("Message") as HTMLInputElement).disabled).toBe(false),
+    );
+    expect(screen.queryByText("reply for session A")).toBeNull(); // no leak into session B's view
+    expect(screen.queryByText("slow turn")).toBeNull();
+  });
+});
+
+describe("SessionSidebar", () => {
+  const sessions: ChatSessionSummary[] = [
+    { session_id: "s-new", title: "Knee pain question", created_at: "2026-10-23T09:00:00Z", updated_at: "2026-10-23T10:00:00Z" },
+    { session_id: "s-old", title: "Booked a checkup", created_at: "2026-10-22T09:00:00Z", updated_at: "2026-10-22T09:05:00Z" },
+  ];
+
+  it("lists sessions and marks the active one", () => {
+    render(
+      <SessionSidebar sessions={sessions} activeId="s-old" onSelect={() => {}} onNew={() => {}} />,
+    );
+
+    expect(screen.getByText("Knee pain question")).toBeTruthy();
+    const active = screen.getByRole("button", { name: /Booked a checkup/ });
+    expect(active.getAttribute("aria-current")).toBe("true");
+    expect(screen.getByRole("button", { name: /Knee pain question/ }).getAttribute("aria-current")).toBeNull();
+  });
+
+  it("fires onSelect with the session id and onNew for the new-session button", () => {
+    const onSelect = vi.fn();
+    const onNew = vi.fn();
+    render(<SessionSidebar sessions={sessions} activeId={null} onSelect={onSelect} onNew={onNew} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Knee pain question/ }));
+    expect(onSelect).toHaveBeenCalledWith("s-new");
+
+    fireEvent.click(screen.getByRole("button", { name: "+ New session" }));
+    expect(onNew).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the empty hint when there are no sessions yet", () => {
+    render(<SessionSidebar sessions={[]} activeId={null} onSelect={() => {}} onNew={() => {}} />);
+
+    expect(screen.getByText(/No past sessions yet/)).toBeTruthy();
+  });
+
+  it("surfaces a failed sessions fetch instead of faking an empty list", () => {
+    render(
+      <SessionSidebar
+        sessions={[]}
+        activeId={null}
+        onSelect={() => {}}
+        onNew={() => {}}
+        error="HTTP 503 Service Unavailable"
+      />,
+    );
+
+    expect(screen.getByText(/Couldn't load sessions: HTTP 503/)).toBeTruthy();
+    expect(screen.queryByText(/No past sessions yet/)).toBeNull();
   });
 });
 
@@ -209,11 +383,13 @@ describe("Home (right pane tabs)", () => {
   it("switches the right pane between bookings and summarizer", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation((url) =>
-        Promise.resolve(
-          jsonResponse(200, String(url).includes("/api/patients/") ? context : [joinedBooking()]),
-        ),
-      ),
+      vi.fn().mockImplementation((url) => {
+        const u = String(url);
+        if (u.includes("/api/patients/")) return Promise.resolve(jsonResponse(200, context));
+        if (u.includes("/messages")) return Promise.resolve(jsonResponse(404, { detail: "Unknown session" }));
+        if (u.includes("/api/chat/sessions")) return Promise.resolve(jsonResponse(200, []));
+        return Promise.resolve(jsonResponse(200, [joinedBooking()]));
+      }),
     );
 
     render(<Home />);
@@ -223,5 +399,39 @@ describe("Home (right pane tabs)", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Summarizer" }));
     expect(screen.getByLabelText("Transcript")).toBeTruthy();
     expect(screen.queryByText("General Checkup")).toBeNull(); // bookings unmounted on the other tab
+  });
+
+  it("reopens an old session from the sidebar and starts a fresh one on demand", async () => {
+    const sessions: ChatSessionSummary[] = [
+      { session_id: "s-old", title: "Old knee chat", created_at: "2026-10-22T09:00:00Z", updated_at: "2026-10-22T09:05:00Z" },
+    ];
+    const oldTranscript: ChatHistoryMessage[] = [
+      { id: 1, session_id: "s-old", role: "user", content: "My knee hurts when I run", intent: null, booking: null, created_at: "2026-10-22T09:00:00Z" },
+      { id: 2, session_id: "s-old", role: "assistant", content: "Let's look at joint & pain options.", intent: "qa", booking: null, created_at: "2026-10-22T09:00:05Z" },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url) => {
+        const u = String(url);
+        if (u.includes("/api/patients/")) return Promise.resolve(jsonResponse(200, context));
+        if (u.includes("/s-old/messages")) return Promise.resolve(jsonResponse(200, oldTranscript));
+        if (u.includes("/messages")) return Promise.resolve(jsonResponse(404, { detail: "Unknown session" }));
+        if (u.includes("/api/chat/sessions")) return Promise.resolve(jsonResponse(200, sessions));
+        return Promise.resolve(jsonResponse(200, []));
+      }),
+    );
+
+    render(<Home />);
+
+    // sidebar lists the persisted session; clicking it loads its transcript
+    fireEvent.click(await screen.findByRole("button", { name: /Old knee chat/ }));
+    expect(await screen.findByText("My knee hurts when I run")).toBeTruthy();
+    expect(screen.getByText(/joint & pain options/)).toBeTruthy();
+    expect(localStorage.getItem("clinicpilot-session-id")).toBe("s-old"); // selection survives reload
+
+    // a new session clears back to the greeting without the old transcript
+    fireEvent.click(screen.getByRole("button", { name: "+ New session" }));
+    await waitFor(() => expect(screen.getByText(/Hi John! I can answer questions/)).toBeTruthy());
+    expect(screen.queryByText("My knee hurts when I run")).toBeNull();
   });
 });

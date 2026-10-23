@@ -69,6 +69,25 @@ export interface ChatMessage {
   isError?: boolean;
 }
 
+/** GET /api/chat/sessions row (sidebar list). */
+export interface ChatSessionSummary {
+  session_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** GET /api/chat/sessions/{id}/messages row (persisted transcript). */
+export interface ChatHistoryMessage {
+  id: number;
+  session_id: string;
+  role: "user" | "assistant";
+  content: string;
+  intent: string | null;
+  booking: BookingOut | null;
+  created_at: string;
+}
+
 /** POST /api/summarize/transcript (bonus, DESIGN §6). */
 export interface SummaryResult {
   chief_complaint: string;

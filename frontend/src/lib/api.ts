@@ -1,12 +1,30 @@
 // Typed client for the backend API (DESIGN §6). Split-origin dev falls back to
 // localhost:8000; the k8s image build inlines the ingress origin via
 // NEXT_PUBLIC_API_URL (it is a build-time constant in the client bundle).
-import type { BookingJoined, ChatResponse, PatientContext, SummaryResult } from "./types";
+import type {
+  BookingJoined,
+  ChatHistoryMessage,
+  ChatResponse,
+  ChatSessionSummary,
+  PatientContext,
+  SummaryResult,
+} from "./types";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /** Demo identity (DESIGN §1: fixed patient P001, John Doe). */
 export const PATIENT_ID = "P001";
+
+/** Fetch error carrying the HTTP status (callers branch on it, e.g. 404). */
+export class HttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = init ? await fetch(`${API_BASE}${path}`, init) : await fetch(`${API_BASE}${path}`);
@@ -20,7 +38,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // non-JSON error body: keep the status text
     }
-    throw new Error(detail);
+    throw new HttpError(detail, res.status);
   }
   return (await res.json()) as T;
 }
@@ -31,6 +49,14 @@ export function postChat(sessionId: string, message: string): Promise<ChatRespon
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, message }), // patient_id: backend default P001
   });
+}
+
+export function getChatSessions(): Promise<ChatSessionSummary[]> {
+  return request<ChatSessionSummary[]>("/api/chat/sessions");
+}
+
+export function getChatMessages(sessionId: string): Promise<ChatHistoryMessage[]> {
+  return request<ChatHistoryMessage[]>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`);
 }
 
 export function getBookings(patientId: string = PATIENT_ID): Promise<BookingJoined[]> {

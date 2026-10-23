@@ -1,4 +1,5 @@
-"""ORM models mirroring mock-data CSVs 1:1 (snake_case, string PKs)."""
+"""ORM models mirroring mock-data CSVs 1:1 (snake_case, string PKs) — plus the
+chat transcript tables (multi-session chat: durable history owned by the backend)."""
 
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
@@ -94,3 +95,38 @@ class TreatmentHistory(Base):
     diagnosis: Mapped[str] = mapped_column(Text)
     prescribed_medication: Mapped[str] = mapped_column(Text)
     doctor_notes: Mapped[str] = mapped_column(Text)
+
+
+class ChatSession(Base):
+    """One browser chat session (session_id = LangGraph thread_id). Created lazily
+    on the session's first successful turn; title = first user message."""
+
+    __tablename__ = "chat_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    patient_id: Mapped[str] = mapped_column(String(10), default="P001")
+    title: Mapped[str] = mapped_column(String(60))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    # bumped explicitly by record_turn — message INSERTs alone wouldn't trigger onupdate
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class ChatMessage(Base):
+    """One persisted chat turn half (user text or assistant reply). Error bubbles
+    and the client-only greeting are never persisted."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.session_id"))
+    role: Mapped[str] = mapped_column(String(10))  # user | assistant
+    content: Mapped[str] = mapped_column(Text)
+    intent: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    booking_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # booking_created dict
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
