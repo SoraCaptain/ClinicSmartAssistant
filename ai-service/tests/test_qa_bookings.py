@@ -227,6 +227,57 @@ def test_bookings_tool_failure_is_readable(fake_chains, catalog_fakes):
     assert fakes["bookings"].prompts == []
 
 
+def test_cancel_request_refused_deterministically(fake_chains):
+    """Fix-A regression: a cancel request must never reach the free-text bookings
+    LLM (it improvised "I've noted your request to cancel"); the refusal cites the
+    clinics behind the patient's own bookings, with phone + policy verbatim."""
+    fakes = fake_chains("check_bookings", bookings_reply="must not be used")
+    graph = build_clinic_graph(InMemorySaver())
+
+    result = _invoke(graph, "Please cancel my booking on November 5", uuid.uuid4().hex)
+
+    assert "can't cancel or reschedule" in result["reply"]
+    assert "+1-555-019-2831" in result["reply"]  # Metro Care phone (both seed bookings are C001)
+    assert "24 hours" in result["reply"]  # cancellation policy verbatim from the catalog
+    assert result["reply"].count("Metro Care") == 1  # two C001 bookings dedup to one clinic line
+    assert "Sunset Wellness" not in result["reply"]  # clinics the patient has no booking at
+    assert fakes["bookings"].prompts == []  # the refusal is code, not LLM output
+
+
+def test_reschedule_request_refused_too(fake_chains):
+    fakes = fake_chains("check_bookings", bookings_reply="must not be used")
+    graph = build_clinic_graph(InMemorySaver())
+
+    result = _invoke(graph, "can we reschedule my November 15 appointment?", uuid.uuid4().hex)
+
+    assert "can't cancel or reschedule" in result["reply"]
+    assert fakes["bookings"].prompts == []
+
+
+def test_cancel_with_no_bookings_keeps_empty_answer(fake_chains, catalog_fakes):
+    """Nothing to cancel: the empty-list answer wins over the refusal."""
+    fakes = fake_chains("check_bookings", bookings_reply="must not be used")
+    catalog_fakes(bookings=[])
+    graph = build_clinic_graph(InMemorySaver())
+
+    result = _invoke(graph, "cancel my appointment please", uuid.uuid4().hex)
+
+    assert result["reply"] == "You have no bookings yet. Would you like to book an appointment?"
+    assert fakes["bookings"].prompts == []
+
+
+def test_cancel_refusal_survives_clinic_read_failure(fake_chains, catalog_fakes):
+    """The cancel path's extra clinic read fails readable (module pattern), not as a 500."""
+    fakes = fake_chains("check_bookings", bookings_reply="must not be used")
+    catalog_fakes(catalog_error=RuntimeError("backend GET /api/clinics failed: 500 boom"))
+    graph = build_clinic_graph(InMemorySaver())
+
+    result = _invoke(graph, "cancel my appointment please", uuid.uuid4().hex)
+
+    assert "couldn't read your bookings" in result["reply"] and "500 boom" in result["reply"]
+    assert fakes["bookings"].prompts == []
+
+
 def test_render_bookings_orders_upcoming_first():
     """Ordering regression for the fail-silent class membership asserts can't catch:
     a reversed sort key or a flipped today-split still passes fragment checks."""

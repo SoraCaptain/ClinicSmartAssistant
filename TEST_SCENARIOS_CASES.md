@@ -654,6 +654,21 @@ The system must not return P002's November 6 booking.
 
 ---
 
+## BOOKING-QUERY-07: Cancel request is refused honestly
+
+**Question**
+
+> I want to cancel my booking on November 5.
+
+**Expected answer**
+
+> I'm sorry — I can't cancel or reschedule bookings from this chat. I can view your bookings and make new ones, but changes must be made with the clinic directly:
+> - Metro Care Health Clinic (+1-555-019-2831): Cancellations must be made at least 24 hours in advance. Late cancellations or no-shows may incur a $50 fee.
+
+Cancelling/rescheduling is outside the system's write scope (view + create only). The refusal is deterministic code, never free-text LLM output, and must not imply a cancellation was made or noted. It cites the clinic's phone number and cancellation policy from the clinic records.
+
+---
+
 # 8. Booking Workflow and Slot Filling
 
 For booking tests, assume all requested times are available, as required by the assignment. After a successful booking, the created record must be persisted and appear in `GET /api/bookings` and the frontend booking panel.

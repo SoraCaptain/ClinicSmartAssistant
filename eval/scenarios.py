@@ -211,6 +211,15 @@ PHASE_A = [
         "Do I have a dermatology appointment on November 6?",
         contains=[[r"\bno\b|not|don'?t|no dermatology|isn'?t"]],
         not_contains=[r"Alice", r"\bP002\b", r"\bB1002\b", r"2:30\s*PM|14:30"])]),
+    scenario("BOOKING-QUERY-07", [turn(
+        "I want to cancel my booking on November 5.",
+        # honest refusal: deterministic text, clinic phone + policy verbatim
+        contains=[[r"can'?t cancel|cannot cancel|unable to cancel"],
+                  [r"\+1-555-019-2831"],
+                  [r"24 hours|24-hour"]],
+        not_contains=[r"noted your request", r"(?:I'?ve |has been |successfully )?cancelled (?:it|your booking)",
+                      r"I(?:'| a)m cancelling", r"\bcancelled\b"],
+        booking_created=False)]),
 
     # 10. Intent switching (read-only instance)
     scenario("INTENT-01", [

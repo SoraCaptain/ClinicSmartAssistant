@@ -199,6 +199,7 @@ def catalog_fakes(monkeypatch):
         monkeypatch.setattr("app.agent.nodes.qa.search_doctors", fake_search_doctors)
         monkeypatch.setattr("app.agent.nodes.qa.search_treatments", fake_search_treatments)
         monkeypatch.setattr("app.agent.nodes.qa.get_clinics", fake_get_clinics)
+        monkeypatch.setattr("app.agent.nodes.bookings_query.get_clinics", fake_get_clinics)
         monkeypatch.setattr("app.agent.nodes.bookings_query.get_my_bookings", bookings_tool)
         monkeypatch.setattr("app.runtime.get_patient_context", context_tool)
         return {"context": context_tool, "bookings_tool": bookings_tool}

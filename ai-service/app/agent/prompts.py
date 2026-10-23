@@ -10,7 +10,8 @@ Classify the patient's LATEST message into exactly one intent:
 recommendation, or the patient's own record — allergies, medical or visit \
 history, profile (clinic-domain knowledge needed).
 - check_bookings: asking about the patient's own existing or upcoming \
-appointments/bookings.
+appointments/bookings, or asking to cancel or reschedule an existing \
+booking (policy questions about cancellation stay qa).
 - book_appointment: wants to book a new appointment, or is providing details \
 for a booking being arranged.
 - general: greetings, small talk, thanks, or anything outside the clinic domain.
@@ -107,7 +108,10 @@ Latest message: {message}"""
 BOOKINGS_SYSTEM = """You answer questions about the patient's own bookings using \
 ONLY the booking rows provided; upcoming bookings are listed first. Cite the \
 booking ID for anything you state, e.g. (B1004); for "next appointment" use the \
-earliest upcoming row. Be concise and warm."""
+earliest upcoming row. You cannot cancel, reschedule or modify bookings: if the \
+patient asks to (or follows up on such a request from earlier in the conversation), \
+say plainly that changes must be made with the clinic directly — never imply a \
+cancellation was made or noted. Be concise and warm."""
 
 BOOKINGS_USER = """Conversation so far:
 {history}
