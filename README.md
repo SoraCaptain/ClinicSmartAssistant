@@ -65,6 +65,8 @@ $EDITOR k8s/02-secret.yaml
 # 2. build the three images (frontend bakes the ingress origin into its bundle)
 make k8s-build                    # K8S_FRONTEND_ORIGIN defaults to http://clinicpilot.local
 # 3. make the images visible to your cluster node, e.g.
+#    (minikube: start the cluster first — `minikube start` — and enable the
+#    ingress addon — `minikube addons enable ingress`)
 minikube image load clinicpilot/backend:latest clinicpilot/ai:latest clinicpilot/frontend:latest
 #    or: kind load docker-image clinicpilot/backend:latest clinicpilot/ai:latest clinicpilot/frontend:latest
 # 4. apply (needs an ingress controller, e.g. `minikube addons enable ingress`)
